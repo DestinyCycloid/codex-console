@@ -1129,6 +1129,11 @@ async def get_available_email_services():
             "available": False,
             "count": 0,
             "services": []
+        },
+        "cloud_mail": {
+            "available": False,
+            "count": 0,
+            "services": []
         }
     }
 
@@ -1256,6 +1261,32 @@ async def get_available_email_services():
 
         result["imap_mail"]["count"] = len(imap_mail_services)
         result["imap_mail"]["available"] = len(imap_mail_services) > 0
+
+        # 获取 Cloud Mail 服务
+        cloud_mail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "cloud_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in cloud_mail_services:
+            config = service.config or {}
+            domain = config.get("domain")
+            # 如果是列表，显示第一个域名
+            if isinstance(domain, list) and domain:
+                domain_display = domain[0]
+            else:
+                domain_display = domain
+            
+            result["cloud_mail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "cloud_mail",
+                "domain": domain_display,
+                "priority": service.priority
+            })
+
+        result["cloud_mail"]["count"] = len(cloud_mail_services)
+        result["cloud_mail"]["available"] = len(cloud_mail_services) > 0
 
     return result
 
