@@ -346,7 +346,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # 验证码配置
     "email_code_timeout": SettingDefinition(
         db_key="email_code.timeout",
-        default_value=120,
+        default_value=30,
         category=SettingCategory.EMAIL,
         description="验证码等待超时时间（秒）"
     ),
@@ -690,7 +690,7 @@ class Settings(BaseModel):
     cpa_api_token: SecretStr = SecretStr("")
 
     # 验证码配置
-    email_code_timeout: int = 120
+    email_code_timeout: int = 30
     email_code_poll_interval: int = 3
 
     # Outlook 配置

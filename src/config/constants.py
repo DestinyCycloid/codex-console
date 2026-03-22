@@ -38,6 +38,7 @@ class EmailServiceType(str, Enum):
     DUCK_MAIL = "duck_mail"
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
+    CLOUD_MAIL = "cloud_mail"
 
 
 # ============================================================================
@@ -138,6 +139,14 @@ EMAIL_SERVICE_DEFAULTS = {
         "use_ssl": True,
         "email": "",
         "password": "",
+        "timeout": 30,
+        "max_retries": 3,
+    },
+    "cloud_mail": {
+        "base_url": "",
+        "admin_email": "",
+        "admin_password": "",
+        "domain": "",
         "timeout": 30,
         "max_retries": 3,
     }

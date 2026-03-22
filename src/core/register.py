@@ -634,7 +634,7 @@ class RegistrationEngine:
             code = self.email_service.get_verification_code(
                 email=self.email,
                 email_id=email_id,
-                timeout=120,
+                timeout=30,
                 pattern=OTP_CODE_PATTERN,
                 otp_sent_at=self._otp_sent_at,
             )

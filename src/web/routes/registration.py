@@ -580,6 +580,7 @@ async def run_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
 def _init_batch_state(batch_id: str, task_uuids: List[str]):
     """初始化批量任务内存状态"""
+    import time
     task_manager.init_batch(batch_id, len(task_uuids))
     batch_tasks[batch_id] = {
         "total": len(task_uuids),
@@ -590,7 +591,8 @@ def _init_batch_state(batch_id: str, task_uuids: List[str]):
         "task_uuids": task_uuids,
         "current_index": 0,
         "logs": [],
-        "finished": False
+        "finished": False,
+        "start_time": time.time(),  # 记录开始时间
     }
 
 
@@ -659,9 +661,34 @@ async def run_batch_parallel(
                     update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
 
     try:
+        import time
+        start_time = time.time()  # 记录开始时间
+        
         await asyncio.gather(*[_run_one(i, u) for i, u in enumerate(task_uuids)], return_exceptions=True)
+        
+        # 计算总耗时
+        end_time = time.time()
+        total_seconds = end_time - start_time
+        
         if not task_manager.is_batch_cancelled(batch_id):
-            add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
+            success_count = batch_tasks[batch_id]['success']
+            failed_count = batch_tasks[batch_id]['failed']
+            
+            # 计算平均每个账号的时间
+            total_accounts = success_count + failed_count
+            avg_time = total_seconds / total_accounts if total_accounts > 0 else 0
+            
+            # 格式化时间显示
+            minutes = int(total_seconds // 60)
+            seconds = int(total_seconds % 60)
+            time_str = f"{minutes}分{seconds}秒" if minutes > 0 else f"{seconds}秒"
+            
+            if failed_count > 0:
+                add_batch_log(f"[完成] 批量任务完成！成功: {success_count}, 未成功: {failed_count}")
+            else:
+                add_batch_log(f"[完成] 批量任务完成！✅ 全部成功: {success_count} 个")
+            
+            add_batch_log(f"[统计] 总耗时: {time_str}, 平均每个账号: {avg_time:.1f}秒")
             update_batch_status(finished=True, status="completed")
         else:
             update_batch_status(finished=True, status="cancelled")
@@ -727,6 +754,9 @@ async def run_batch_pipeline(
             semaphore.release()
 
     try:
+        import time
+        start_time = time.time()  # 记录开始时间
+        
         for i, task_uuid in enumerate(task_uuids):
             if task_manager.is_batch_cancelled(batch_id) or batch_tasks[batch_id]["cancelled"]:
                 with get_db() as db:
@@ -751,8 +781,29 @@ async def run_batch_pipeline(
         if running_tasks_list:
             await asyncio.gather(*running_tasks_list, return_exceptions=True)
 
+        # 计算总耗时
+        end_time = time.time()
+        total_seconds = end_time - start_time
+
         if not task_manager.is_batch_cancelled(batch_id):
-            add_batch_log(f"[完成] 批量任务完成！成功: {batch_tasks[batch_id]['success']}, 失败: {batch_tasks[batch_id]['failed']}")
+            success_count = batch_tasks[batch_id]['success']
+            failed_count = batch_tasks[batch_id]['failed']
+            
+            # 计算平均每个账号的时间
+            total_accounts = success_count + failed_count
+            avg_time = total_seconds / total_accounts if total_accounts > 0 else 0
+            
+            # 格式化时间显示
+            minutes = int(total_seconds // 60)
+            seconds = int(total_seconds % 60)
+            time_str = f"{minutes}分{seconds}秒" if minutes > 0 else f"{seconds}秒"
+            
+            if failed_count > 0:
+                add_batch_log(f"[完成] 批量任务完成！成功: {success_count}, 未成功: {failed_count}")
+            else:
+                add_batch_log(f"[完成] 批量任务完成！✅ 全部成功: {success_count} 个")
+            
+            add_batch_log(f"[统计] 总耗时: {time_str}, 平均每个账号: {avg_time:.1f}秒")
             update_batch_status(finished=True, status="completed")
     except Exception as e:
         logger.error(f"批量任务 {batch_id} 异常: {e}")
@@ -1129,6 +1180,11 @@ async def get_available_email_services():
             "available": False,
             "count": 0,
             "services": []
+        },
+        "cloud_mail": {
+            "available": False,
+            "count": 0,
+            "services": []
         }
     }
 
@@ -1256,6 +1312,32 @@ async def get_available_email_services():
 
         result["imap_mail"]["count"] = len(imap_mail_services)
         result["imap_mail"]["available"] = len(imap_mail_services) > 0
+
+        # 获取 Cloud Mail 服务
+        cloud_mail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "cloud_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in cloud_mail_services:
+            config = service.config or {}
+            domain = config.get("domain")
+            # 如果是列表，显示第一个域名
+            if isinstance(domain, list) and domain:
+                domain_display = domain[0]
+            else:
+                domain_display = domain
+            
+            result["cloud_mail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "cloud_mail",
+                "domain": domain_display,
+                "priority": service.priority
+            })
+
+        result["cloud_mail"]["count"] = len(cloud_mail_services)
+        result["cloud_mail"]["available"] = len(cloud_mail_services) > 0
 
     return result
 
