@@ -4,6 +4,7 @@ Cloud Mail 邮箱服务实现
 """
 
 import re
+import sys
 import time
 import logging
 import random
@@ -27,6 +28,8 @@ class CloudMailService(BaseEmailService):
     # 类变量：所有实例共享token（按base_url区分）
     _shared_tokens: Dict[str, tuple] = {}  # {base_url: (token, expires_at)}
     _token_lock = None  # 延迟初始化
+    _seen_ids_lock = None  # seen_email_ids 的锁
+    _shared_seen_email_ids: Dict[str, set] = {}  # 所有实例共享已处理的邮件ID（按邮箱地址区分）
 
     def __init__(self, config: Dict[str, Any] = None, name: str = None):
         """
@@ -69,10 +72,10 @@ class CloudMailService(BaseEmailService):
         if CloudMailService._token_lock is None:
             import threading
             CloudMailService._token_lock = threading.Lock()
+            CloudMailService._seen_ids_lock = threading.Lock()
 
         # 缓存邮箱信息（实例级别）
         self._created_emails: Dict[str, Dict[str, Any]] = {}
-        self._seen_email_ids: Dict[str, set] = {}  # 跨调用记录已处理的邮件ID
 
     def _generate_token(self) -> str:
         """
@@ -114,7 +117,6 @@ class CloudMailService(BaseEmailService):
             if not token:
                 raise EmailServiceError("生成 token 失败: 未返回 token")
 
-            logger.info("Cloud Mail token 生成成功")
             return token
 
         except requests.RequestException as e:
@@ -149,7 +151,6 @@ class CloudMailService(BaseEmailService):
             token = self._generate_token()
             expires_at = time.time() + 3600  # 1 小时后过期
             CloudMailService._shared_tokens[base_url] = (token, expires_at)
-            print(f"[CloudMail] Token已刷新，所有实例将使用新token", flush=True)
             return token
 
     def _get_headers(self, token: Optional[str] = None) -> Dict[str, str]:
@@ -323,7 +324,6 @@ class CloudMailService(BaseEmailService):
             # 缓存邮箱信息
             self._created_emails[email_address] = email_info
 
-            logger.info(f"成功创建 Cloud Mail 邮箱: {email_address}")
             self.update_status(True)
             return email_info
 
@@ -354,13 +354,21 @@ class CloudMailService(BaseEmailService):
         Returns:
             验证码字符串，超时返回 None
         """
-        logger.info(f"正在从 Cloud Mail 邮箱 {email} 获取验证码...")
-
         start_time = time.time()
-        # 使用实例变量跨调用记录已处理的邮件ID
-        if email not in self._seen_email_ids:
-            self._seen_email_ids[email] = set()
-        seen_ids = self._seen_email_ids[email]
+        
+        # 每次调用时，记录本次查询开始前已存在的邮件ID
+        # 这样可以支持同一个邮箱多次接收验证码（注册+OAuth）
+        initial_seen_ids = set()
+        with CloudMailService._seen_ids_lock:
+            if email not in CloudMailService._shared_seen_email_ids:
+                CloudMailService._shared_seen_email_ids[email] = set()
+            else:
+                # 记录本次查询开始前的已处理邮件
+                initial_seen_ids = CloudMailService._shared_seen_email_ids[email].copy()
+        
+        # 本次查询中新处理的邮件ID（仅在本次查询中有效）
+        current_seen_ids = set()
+        
         check_count = 0
 
         while time.time() - start_time < timeout:
@@ -391,23 +399,37 @@ class CloudMailService(BaseEmailService):
                     if not email_id:
                         continue
                     
-                    if email_id in seen_ids:
+                    # 跳过本次查询开始前已存在的邮件
+                    if email_id in initial_seen_ids:
                         continue
+                    
+                    # 跳过本次查询中已处理的邮件（防止同一轮查询重复处理）
+                    if email_id in current_seen_ids:
+                        continue
+                    
+                    # 标记为本次已处理
+                    current_seen_ids.add(email_id)
+                    
+                    # 同时更新全局已处理列表（防止其他并发任务重复处理）
+                    with CloudMailService._seen_ids_lock:
+                        CloudMailService._shared_seen_email_ids[email].add(email_id)
                     
                     sender_email = str(email_item.get("sendEmail", "")).lower()
                     sender_name = str(email_item.get("sendName", "")).lower()
                     subject = str(email_item.get("subject", ""))
+                    to_email = email_item.get("toEmail", "")
+                    
+                    # 检查收件人是否匹配
+                    if to_email != email:
+                        continue
                     
                     if "openai" not in sender_email and "openai" not in sender_name:
-                        seen_ids.add(email_id)
                         continue
 
                     # 从主题提取
                     match = re.search(pattern, subject)
                     if match:
                         code = match.group(1)
-                        logger.info(f"从邮件 {email_id} 提取到验证码")
-                        seen_ids.add(email_id)
                         self.update_status(True)
                         return code
 
@@ -421,32 +443,22 @@ class CloudMailService(BaseEmailService):
                         match = re.search(pattern, clean_content)
                         if match:
                             code = match.group(1)
-                            print(f"[CloudMail] ✅ 找到验证码: {code}", flush=True)
-                            sys.stdout.flush()
-                            seen_ids.add(email_id)
                             self.update_status(True)
                             return code
-                    
-                    seen_ids.add(email_id)
 
             except Exception as e:
-                print(f"[CloudMail] 异常: {e}", flush=True)
-                sys.stdout.flush()
                 # 如果是认证错误，强制刷新token
                 if "401" in str(e) or "认证" in str(e):
-                    print(f"[CloudMail] 检测到认证错误，强制刷新token", flush=True)
-                    sys.stdout.flush()
                     try:
                         self._get_token(force_refresh=True)
-                    except Exception as refresh_error:
-                        print(f"[CloudMail] 刷新token失败: {refresh_error}", flush=True)
-                        sys.stdout.flush()
+                    except Exception:
+                        pass
                 logger.error(f"检查邮件时出错: {e}", exc_info=True)
 
             time.sleep(3)
 
-        print(f"[CloudMail] 超时！检查{check_count}次，已处理: {list(seen_ids)}", flush=True)
-        sys.stdout.flush()
+        # 超时
+        logger.warning(f"等待验证码超时: {email}")
         return None
 
     def list_emails(self, **kwargs) -> List[Dict[str, Any]]:
@@ -470,10 +482,8 @@ class CloudMailService(BaseEmailService):
         """
         if email_id in self._created_emails:
             del self._created_emails[email_id]
-            logger.info(f"已从缓存中移除 Cloud Mail 邮箱: {email_id}")
             return True
 
-        logger.warning(f"Cloud Mail 邮箱不在缓存中: {email_id}")
         return False
 
     def check_health(self) -> bool:
