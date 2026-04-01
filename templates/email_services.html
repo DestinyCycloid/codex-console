@@ -93,6 +93,33 @@
                 </div>
             </div>
 
+            <!-- Outlook 别名导入 -->
+            <div class="card">
+                <div class="card-header">
+                    <h3>🏷️ Outlook 别名导入</h3>
+                    <button class="btn btn-ghost btn-sm" id="toggle-alias-import">展开</button>
+                </div>
+                <div class="card-body" id="alias-import-body" style="display: none;">
+                    <div class="import-info">
+                        <p><strong>使用说明：</strong>选择一个已导入的 Outlook 账户，然后粘贴别名列表（每行一个）。</p>
+                        <p>别名邮件会自动进入主邮箱收件箱，注册时会轮询使用这些别名。</p>
+                    </div>
+                    <div class="form-group">
+                        <label for="alias-service-select">选择 Outlook 账户</label>
+                        <select id="alias-service-select"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="alias-import-data">别名列表（每行一个）</label>
+                        <textarea id="alias-import-data" rows="8" placeholder="alias1@yourdomain.com&#10;alias2@yourdomain.com&#10;alias3@yourdomain.com"></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-primary" id="alias-import-btn">🏷️ 导入别名</button>
+                        <button type="button" class="btn btn-secondary" id="clear-alias-btn">清空</button>
+                    </div>
+                    <div id="alias-import-result" style="display: none; margin-top: var(--spacing-md);"></div>
+                </div>
+            </div>
+
             <!-- 自定义邮箱管理（含 MoeMail / TempMail / DuckMail） -->
             <div class="card">
                 <div class="card-header">
@@ -142,6 +169,7 @@
                                 <tr>
                                     <th style="width: 40px;"><input type="checkbox" id="select-all-outlook"></th>
                                     <th>邮箱</th>
+                                    <th style="width: 100px;">别名数</th>
                                     <th style="width: 100px;">认证方式</th>
                                     <th style="width: 100px;">状态</th>
                                     <th style="width: 80px;">优先级</th>
@@ -151,7 +179,7 @@
                             </thead>
                             <tbody id="outlook-accounts-table">
                                 <tr>
-                                    <td colspan="7">
+                                    <td colspan="8">
                                         <div class="empty-state">
                                             <div class="skeleton skeleton-text"></div>
                                             <div class="skeleton skeleton-text" style="width: 80%;"></div>
@@ -545,6 +573,11 @@
                         <label for="edit-outlook-refresh-token">OAuth Refresh Token (可选)</label>
                         <input type="text" id="edit-outlook-refresh-token" name="refresh_token" placeholder="留空则保持原值不变">
                         <small style="color: var(--text-muted);">留空则保持原值不变</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-outlook-aliases">别名列表（每行一个，可选）</label>
+                        <textarea id="edit-outlook-aliases" name="aliases" rows="6" placeholder="alias1@yourdomain.com&#10;alias2@yourdomain.com"></textarea>
+                        <small style="color: var(--text-muted);">别名邮件会自动进入主邮箱收件箱，注册时会轮询使用这些别名</small>
                     </div>
                     <div class="form-row">
                         <div class="form-group">

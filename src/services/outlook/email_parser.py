@@ -60,7 +60,15 @@ class EmailParser:
             logger.debug(f"邮件未包含验证关键词: {subject[:50]}")
             return False
 
-        # 3. 收件人检查已移除：别名邮件的 IMAP 头中收件人可能不匹配，只靠发件人+关键词判断
+        # 3. 优先校验收件人，避免同一收件箱并发注册时串用别名验证码。
+        # 若邮件头里没有可用收件人信息，再降级为仅靠发件人+关键词判断。
+        if target_email and email.recipients:
+            target = target_email.lower()
+            recipient_text = " ".join(email.recipients).lower()
+            if target not in recipient_text:
+                logger.debug(f"邮件收件人不匹配目标邮箱: {target_email} not in {recipient_text[:120]}")
+                return False
+
         logger.debug(f"识别为 OpenAI 验证邮件: {subject[:50]}")
         return True
 
@@ -148,11 +156,12 @@ class EmailParser:
             # 时间戳过滤
             if min_timestamp > 0 and email.received_timestamp > 0:
                 if email.received_timestamp < min_timestamp:
-                    logger.debug(f"跳过旧邮件: {email.subject[:50]}")
+                    logger.debug(f"跳过旧邮件: {email.subject[:50]} (ts={email.received_timestamp} < min={min_timestamp})")
                     continue
 
             # 检查是否是 OpenAI 验证邮件
             if not self.is_openai_verification_email(email, target_email):
+                logger.debug(f"邮件未通过验证检查: {email.subject[:80]} from {email.sender}")
                 continue
 
             # 提取验证码

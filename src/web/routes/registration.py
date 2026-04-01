@@ -27,6 +27,8 @@ router = APIRouter()
 running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
+# Outlook 批量任务目标邮箱覆盖（task_uuid -> selected_email）
+outlook_task_targets: Dict[str, str] = {}
 
 
 # ============== Proxy Helper Functions ==============
@@ -139,6 +141,7 @@ class OutlookAccountForRegistration(BaseModel):
     has_oauth: bool              # 是否有 OAuth 配置
     is_registered: bool          # 是否已注册
     registered_account_id: Optional[int] = None
+    alias_count: int = 0         # 别名数量
 
 
 class OutlookAccountsListResponse(BaseModel):
@@ -277,6 +280,9 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 if db_service:
                     service_type = EmailServiceType(db_service.service_type)
                     config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+                    selected_email = outlook_task_targets.get(task_uuid)
+                    if selected_email and service_type == EmailServiceType.OUTLOOK:
+                        config = {**config, "selected_email": selected_email}
                     # 更新任务关联的邮箱服务
                     crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
                     logger.info(f"使用数据库邮箱服务: {db_service.name} (ID: {db_service.id}, 类型: {service_type.value})")
@@ -323,23 +329,35 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     if not outlook_services:
                         raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
 
-                    # 找到一个未注册的 Outlook 账户
+                    # 找到一个未注册的 Outlook 账户（检查主邮箱和别名）
                     selected_service = None
                     for svc in outlook_services:
                         email = svc.config.get("email") if svc.config else None
                         if not email:
                             continue
-                        # 检查是否已在 accounts 表中注册
+                        # 检查主邮箱是否已注册
                         existing = db.query(Account).filter(Account.email == email).first()
-                        if not existing:
-                            selected_service = svc
-                            logger.info(f"选择未注册的 Outlook 账户: {email}")
-                            break
-                        else:
+                        if existing:
                             logger.info(f"跳过已注册的 Outlook 账户: {email}")
+                            continue
+                        # 检查别名是否已注册
+                        aliases = svc.config.get("aliases", []) if svc.config else []
+                        registered_aliases = []
+                        for alias in aliases:
+                            alias_exists = db.query(Account).filter(Account.email == alias).first()
+                            if alias_exists:
+                                registered_aliases.append(alias)
+                        if registered_aliases:
+                            logger.info(f"Outlook 账户 {email} 的部分别名已注册: {registered_aliases}")
+                        selected_service = svc
+                        logger.info(f"选择未注册的 Outlook 账户: {email}（剩余别名: {len(aliases) - len(registered_aliases)}）")
+                        break
 
                     if selected_service and selected_service.config:
                         config = selected_service.config.copy()
+                        selected_email = outlook_task_targets.get(task_uuid)
+                        if selected_email:
+                            config["selected_email"] = selected_email
                         crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
                         logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
                     else:
@@ -536,6 +554,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                 task_manager.update_status(task_uuid, "failed", error=str(e))
             except:
                 pass
+        finally:
+            outlook_task_targets.pop(task_uuid, None)
 
 
 async def run_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None):
@@ -1380,13 +1400,16 @@ async def get_outlook_accounts_for_registration():
             else:
                 unregistered_count += 1
 
+            alias_count = len(config.get("aliases", []))
+
             accounts.append(OutlookAccountForRegistration(
                 id=service.id,
                 email=email,
                 name=service.name,
                 has_oauth=bool(config.get("client_id") and config.get("refresh_token")),
                 is_registered=is_registered,
-                registered_account_id=existing_account.id if existing_account else None
+                registered_account_id=existing_account.id if existing_account else None,
+                alias_count=alias_count
             ))
 
         return OutlookAccountsListResponse(
@@ -1399,7 +1422,7 @@ async def get_outlook_accounts_for_registration():
 
 async def run_outlook_batch_registration(
     batch_id: str,
-    service_ids: List[int],
+    task_specs: List[Dict[str, object]],
     skip_registered: bool,
     proxy: Optional[str],
     interval_min: int,
@@ -1416,7 +1439,7 @@ async def run_outlook_batch_registration(
     """
     异步执行 Outlook 批量注册任务，复用通用并发逻辑
 
-    将每个 service_id 映射为一个独立的 task_uuid，然后调用
+    将每个 Outlook 主账号/别名目标映射为一个独立的 task_uuid，然后调用
     run_batch_registration 的并发逻辑
     """
     loop = task_manager.get_loop()
@@ -1424,10 +1447,12 @@ async def run_outlook_batch_registration(
         loop = asyncio.get_event_loop()
         task_manager.set_loop(loop)
 
-    # 预先为每个 service_id 创建注册任务记录
+    # 预先为每个目标邮箱创建独立注册任务
     task_uuids = []
     with get_db() as db:
-        for service_id in service_ids:
+        for spec in task_specs:
+            service_id = int(spec["service_id"])
+            selected_email = str(spec["selected_email"])
             task_uuid = str(uuid.uuid4())
             crud.create_registration_task(
                 db,
@@ -1436,15 +1461,21 @@ async def run_outlook_batch_registration(
                 email_service_id=service_id
             )
             task_uuids.append(task_uuid)
+            outlook_task_targets[task_uuid] = selected_email
 
-    # 复用通用并发逻辑（outlook 服务类型，每个任务通过 email_service_id 定位账户）
+    if not task_uuids:
+        batch_tasks[batch_id]["finished"] = True
+        batch_tasks[batch_id]["cancelled"] = False
+        return
+
+    # 复用通用并发逻辑
     await run_batch_registration(
         batch_id=batch_id,
         task_uuids=task_uuids,
         email_service_type="outlook",
         proxy=proxy,
         email_service_config=None,
-        email_service_id=None,   # 每个任务已绑定了独立的 email_service_id
+        email_service_id=None,
         interval_min=interval_min,
         interval_max=interval_max,
         concurrency=concurrency,
@@ -1488,38 +1519,49 @@ async def start_outlook_batch_registration(
     if request.mode not in ("parallel", "pipeline"):
         raise HTTPException(status_code=400, detail="模式必须为 parallel 或 pipeline")
 
-    # 过滤掉已注册的邮箱
-    actual_service_ids = request.service_ids
+    task_specs: List[Dict[str, object]] = []
     skipped_count = 0
+    actual_service_ids: List[int] = []
 
-    if request.skip_registered:
-        actual_service_ids = []
-        with get_db() as db:
-            for service_id in request.service_ids:
-                service = db.query(EmailServiceModel).filter(
-                    EmailServiceModel.id == service_id
-                ).first()
+    with get_db() as db:
+        for service_id in request.service_ids:
+            service = db.query(EmailServiceModel).filter(
+                EmailServiceModel.id == service_id
+            ).first()
+            if not service:
+                continue
 
-                if not service:
-                    continue
+            config = service.config or {}
+            aliases = config.get("aliases", [])
+            email = config.get("email") or service.name
+            added_for_service = False
 
-                config = service.config or {}
-                email = config.get("email") or service.name
-
-                # 检查是否已注册
-                existing_account = db.query(Account).filter(
-                    Account.email == email
-                ).first()
-
-                if existing_account:
+            if aliases:
+                for alias in aliases:
+                    alias_exists = db.query(Account).filter(Account.email == alias).first()
+                    if request.skip_registered and alias_exists:
+                        skipped_count += 1
+                        continue
+                    task_specs.append({"service_id": service_id, "selected_email": alias})
+                    added_for_service = True
+            else:
+                main_exists = db.query(Account).filter(Account.email == email).first()
+                if request.skip_registered and main_exists:
                     skipped_count += 1
-                else:
-                    actual_service_ids.append(service_id)
+                    continue
+                task_specs.append({"service_id": service_id, "selected_email": email})
+                added_for_service = True
 
-    if not actual_service_ids:
+            if added_for_service and service_id not in actual_service_ids:
+                actual_service_ids.append(service_id)
+
+    total_selected = len(task_specs) + skipped_count
+    total_to_register = len(task_specs)
+
+    if total_to_register == 0:
         return OutlookBatchRegistrationResponse(
             batch_id="",
-            total=len(request.service_ids),
+            total=total_selected,
             skipped=skipped_count,
             to_register=0,
             service_ids=[]
@@ -1530,7 +1572,7 @@ async def start_outlook_batch_registration(
 
     # 初始化批量任务状态
     batch_tasks[batch_id] = {
-        "total": len(actual_service_ids),
+        "total": total_to_register,
         "completed": 0,
         "success": 0,
         "failed": 0,
@@ -1546,7 +1588,7 @@ async def start_outlook_batch_registration(
     background_tasks.add_task(
         run_outlook_batch_registration,
         batch_id,
-        actual_service_ids,
+        task_specs,
         request.skip_registered,
         request.proxy,
         request.interval_min,
@@ -1563,9 +1605,9 @@ async def start_outlook_batch_registration(
 
     return OutlookBatchRegistrationResponse(
         batch_id=batch_id,
-        total=len(request.service_ids),
+        total=total_selected,
         skipped=skipped_count,
-        to_register=len(actual_service_ids),
+        to_register=total_to_register,
         service_ids=actual_service_ids
     )
 

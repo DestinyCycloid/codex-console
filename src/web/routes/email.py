@@ -3,9 +3,13 @@
 """
 
 import logging
+import secrets
+import time
 from typing import List, Optional, Dict, Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from ...database import crud
@@ -15,6 +19,9 @@ from ...services import EmailServiceFactory, EmailServiceType
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# OAuth2 状态存储 (内存，进程重启后失效)
+_oauth_states: Dict[str, Dict[str, Any]] = {}
 
 
 # ============== Pydantic Models ==============
@@ -72,6 +79,11 @@ class OutlookBatchImportRequest(BaseModel):
     priority: int = 0
 
 
+class OutlookAliasesImportRequest(BaseModel):
+    """Outlook 别名导入请求"""
+    aliases: List[str]
+
+
 class OutlookBatchImportResponse(BaseModel):
     """Outlook 批量导入响应"""
     total: int
@@ -102,6 +114,10 @@ def filter_sensitive_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # 为 Outlook 计算是否有 OAuth
     if config.get('client_id') and config.get('refresh_token'):
         filtered['has_oauth'] = True
+
+    # 为 Outlook 添加别名数量
+    if 'aliases' in config:
+        filtered['alias_count'] = len(config['aliases'])
 
     return filtered
 
@@ -559,6 +575,37 @@ async def batch_import_outlook(request: OutlookBatchImportRequest):
     )
 
 
+@router.post("/outlook/{service_id}/aliases")
+async def import_outlook_aliases(service_id: int, request: OutlookAliasesImportRequest):
+    """
+    为指定 Outlook 账户添加别名列表
+
+    别名用于注册时轮询使用，所有别名邮件都会进入主邮箱收件箱。
+    """
+    with get_db() as db:
+        service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.id == service_id,
+            EmailServiceModel.service_type == "outlook"
+        ).first()
+        if not service:
+            raise HTTPException(status_code=404, detail="Outlook 账户不存在")
+
+        config = service.config or {}
+        config["aliases"] = request.aliases
+        from sqlalchemy.orm.attributes import flag_modified
+        service.config = config
+        flag_modified(service, "config")
+        db.commit()
+        db.refresh(service)
+
+        return {
+            "success": True,
+            "service_id": service_id,
+            "alias_count": len(request.aliases),
+            "message": f"已添加 {len(request.aliases)} 个别名"
+        }
+
+
 @router.delete("/outlook/batch")
 async def batch_delete_outlook(service_ids: List[int]):
     """批量删除 Outlook 邮箱服务"""
@@ -608,3 +655,179 @@ async def test_tempmail_service(request: TempmailTestRequest):
     except Exception as e:
         logger.error(f"测试临时邮箱失败: {e}")
         return {"success": False, "message": f"测试失败: {str(e)}"}
+
+
+# ============== Outlook OAuth2 授权 ==============
+
+# 保留上游默认 client_id；若账户里已配置 client_id，则优先使用账户配置
+DEFAULT_OUTLOOK_CLIENT_ID = "24d9a0ed-8787-4584-883c-2fd79308940a"
+
+# IMAP 所需 scope
+IMAP_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access"
+
+
+@router.get("/outlook/oauth/authorize")
+async def outlook_oauth_authorize(
+    request: Request,
+    service_id: Optional[int] = Query(None, description="关联的邮箱服务 ID（可选）"),
+    client_id: Optional[str] = Query(None, description="自定义 client_id（可选，默认使用账户配置）"),
+    admin_consent: bool = Query(False, description="是否使用管理员同意流程"),
+):
+    """
+    发起 Outlook OAuth2 授权流程
+
+    跳转到微软登录页面，用户授权后回调获取 refresh_token。
+    管理员可通过 admin_consent=true 代表整个组织授权。
+    """
+    actual_client_id = ""
+    if service_id:
+        with get_db() as db:
+            service = db.query(EmailServiceModel).filter(
+                EmailServiceModel.id == service_id,
+                EmailServiceModel.service_type == "outlook"
+            ).first()
+            if service and service.config:
+                actual_client_id = (service.config.get("client_id") or "").strip()
+
+    if not actual_client_id:
+        actual_client_id = (client_id or DEFAULT_OUTLOOK_CLIENT_ID).strip()
+
+    if not actual_client_id:
+        raise HTTPException(status_code=400, detail="请先在 Outlook 账户配置中填写 OAuth Client ID")
+
+    # 生成 state 用于防 CSRF 和传递 service_id
+    state_token = secrets.token_urlsafe(32)
+    _oauth_states[state_token] = {
+        "service_id": service_id,
+        "client_id": actual_client_id,
+        "created_at": time.time(),
+    }
+
+    # 清理过期 state（超过 10 分钟）
+    now = time.time()
+    expired = [k for k, v in _oauth_states.items() if now - v["created_at"] > 600]
+    for k in expired:
+        del _oauth_states[k]
+
+    redirect_uri = str(request.url_for("outlook_oauth_callback"))
+
+    if admin_consent:
+        # 管理员同意端点：代表整个组织授权
+        auth_url = (
+            f"https://login.microsoftonline.com/organizations/v2.0/adminconsent?"
+            f"client_id={actual_client_id}"
+            f"&redirect_uri={quote(redirect_uri, safe='')}"
+            f"&state={state_token}"
+            f"&scope={quote(IMAP_SCOPE, safe='')}"
+        )
+    else:
+        # 普通用户授权
+        auth_url = (
+            f"https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"
+            f"client_id={actual_client_id}"
+            f"&response_type=code"
+            f"&redirect_uri={quote(redirect_uri, safe='')}"
+            f"&response_mode=query"
+            f"&scope={quote(IMAP_SCOPE, safe='')}"
+            f"&state={state_token}"
+            f"&prompt=select_account"
+        )
+
+    return RedirectResponse(url=auth_url)
+
+
+@router.get("/outlook/oauth/callback")
+async def outlook_oauth_callback(
+    request: Request,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    """
+    OAuth2 授权回调
+
+    获取 authorization code，然后交换 refresh_token。
+    """
+    from curl_cffi import requests as _requests
+
+    # 检查错误
+    if error:
+        error_desc = request.query_params.get("error_description", error)
+        return {
+            "success": False,
+            "message": f"授权失败: {error}",
+            "details": error_desc,
+        }
+
+    if not code or not state:
+        return {"success": False, "message": "缺少授权码或 state"}
+
+    # 验证 state
+    state_data = _oauth_states.pop(state, None)
+    if not state_data:
+        return {"success": False, "message": "授权已过期或无效，请重新授权"}
+
+    service_id = state_data.get("service_id")
+    client_id = state_data.get("client_id", DEFAULT_OUTLOOK_CLIENT_ID)
+
+    # 用 authorization code 交换 refresh_token
+    token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    redirect_uri = str(request.url_for("outlook_oauth_callback"))
+
+    try:
+        resp = _requests.post(
+            token_url,
+            data={
+                "client_id": client_id,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+                "scope": IMAP_SCOPE,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
+            impersonate="chrome110",
+        )
+
+        if resp.status_code != 200:
+            return {
+                "success": False,
+                "message": f"Token 交换失败: HTTP {resp.status_code}",
+                "details": resp.text[:500],
+            }
+
+        token_data = resp.json()
+        refresh_token = token_data.get("refresh_token")
+
+        if not refresh_token:
+            return {"success": False, "message": "未获取到 refresh_token"}
+
+        # 如果有 service_id，直接更新到数据库
+        if service_id:
+            with get_db() as db:
+                service = db.query(EmailServiceModel).filter(
+                    EmailServiceModel.id == service_id,
+                    EmailServiceModel.service_type == "outlook"
+                ).first()
+                if service:
+                    config = service.config or {}
+                    config["client_id"] = client_id
+                    config["refresh_token"] = refresh_token
+                    from sqlalchemy.orm.attributes import flag_modified
+                    service.config = config
+                    flag_modified(service, "config")
+                    db.commit()
+                    logger.info(f"已为 Outlook 服务 {service_id} 更新 OAuth 凭据")
+
+        # 返回成功结果，不暴露 refresh_token 内容
+        return {
+            "success": True,
+            "message": "OAuth 授权成功！",
+            "client_id": client_id,
+            "service_id": service_id,
+            "hint": "refresh_token 已自动保存到对应的邮箱服务配置中（如果指定了 service_id）",
+        }
+
+    except Exception as e:
+        logger.error(f"OAuth 回调处理失败: {e}")
+        return {"success": False, "message": f"处理失败: {str(e)}"}

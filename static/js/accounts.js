@@ -315,7 +315,7 @@ function renderAccounts(accounts) {
             <td>
                 <div class="cpa-status">
                     ${account.subscription_type
-                        ? `<span class="badge uploaded" title="${account.subscription_type}">${account.subscription_type}</span>`
+                        ? `<span class="badge ${account.subscription_type === 'free' ? 'pending' : 'uploaded'}" title="${account.subscription_type}">${account.subscription_type}</span>`
                         : `<span class="badge pending">-</span>`}
                 </div>
             </td>

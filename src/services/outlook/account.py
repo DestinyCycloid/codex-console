@@ -2,8 +2,8 @@
 Outlook 账户数据类
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List
 
 
 @dataclass
@@ -13,6 +13,7 @@ class OutlookAccount:
     password: str = ""
     client_id: str = ""
     refresh_token: str = ""
+    aliases: List[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "OutlookAccount":
@@ -21,7 +22,8 @@ class OutlookAccount:
             email=config.get("email", ""),
             password=config.get("password", ""),
             client_id=config.get("client_id", ""),
-            refresh_token=config.get("refresh_token", "")
+            refresh_token=config.get("refresh_token", ""),
+            aliases=config.get("aliases", [])
         )
 
     def has_oauth(self) -> bool:
@@ -37,6 +39,8 @@ class OutlookAccount:
         result = {
             "email": self.email,
             "has_oauth": self.has_oauth(),
+            "aliases": self.aliases,
+            "alias_count": len(self.aliases),
         }
         if include_sensitive:
             result.update({
@@ -48,4 +52,5 @@ class OutlookAccount:
 
     def __str__(self) -> str:
         """字符串表示"""
-        return f"OutlookAccount({self.email})"
+        alias_info = f" (+{len(self.aliases)} aliases)" if self.aliases else ""
+        return f"OutlookAccount({self.email}{alias_info})"

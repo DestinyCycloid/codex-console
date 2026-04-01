@@ -53,7 +53,7 @@ class Account(Base):
     cpa_uploaded = Column(Boolean, default=False)  # 是否已上传到 CPA
     cpa_uploaded_at = Column(DateTime)  # 上传时间
     source = Column(String(20), default='register')  # 'register' 或 'login'，区分账号来源
-    subscription_type = Column(String(20))  # None / 'plus' / 'team'
+    subscription_type = Column(String(20))  # 'free' / 'plus' / 'team'
     subscription_at = Column(DateTime)  # 订阅开通时间
     cookies = Column(Text)  # 完整 cookie 字符串，用于支付请求
     created_at = Column(DateTime, default=datetime.utcnow)

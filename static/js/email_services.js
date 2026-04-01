@@ -26,6 +26,15 @@ const elements = {
     clearImportBtn: document.getElementById('clear-import-btn'),
     importResult: document.getElementById('import-result'),
 
+    // 别名导入
+    toggleAliasImport: document.getElementById('toggle-alias-import'),
+    aliasImportBody: document.getElementById('alias-import-body'),
+    aliasServiceSelect: document.getElementById('alias-service-select'),
+    aliasImportData: document.getElementById('alias-import-data'),
+    aliasImportBtn: document.getElementById('alias-import-btn'),
+    clearAliasBtn: document.getElementById('clear-alias-btn'),
+    aliasImportResult: document.getElementById('alias-import-result'),
+
     // Outlook 列表
     outlookTable: document.getElementById('outlook-accounts-table'),
     selectAllOutlook: document.getElementById('select-all-outlook'),
@@ -103,11 +112,26 @@ function initEventListeners() {
         elements.toggleOutlookImport.textContent = isHidden ? '收起' : '展开';
     });
 
+    // 别名导入展开/收起
+    elements.toggleAliasImport.addEventListener('click', () => {
+        const isHidden = elements.aliasImportBody.style.display === 'none';
+        elements.aliasImportBody.style.display = isHidden ? 'block' : 'none';
+        elements.toggleAliasImport.textContent = isHidden ? '收起' : '展开';
+        if (isHidden) populateAliasServiceSelect();
+    });
+
     // Outlook 导入
     elements.outlookImportBtn.addEventListener('click', handleOutlookImport);
     elements.clearImportBtn.addEventListener('click', () => {
         elements.outlookImportData.value = '';
         elements.importResult.style.display = 'none';
+    });
+
+    // 别名导入
+    elements.aliasImportBtn.addEventListener('click', handleAliasImport);
+    elements.clearAliasBtn.addEventListener('click', () => {
+        elements.aliasImportData.value = '';
+        elements.aliasImportResult.style.display = 'none';
     });
 
     // Outlook 全选
@@ -238,20 +262,29 @@ async function loadOutlookServices() {
             return;
         }
 
-        elements.outlookTable.innerHTML = outlookServices.map(service => `
+        elements.outlookTable.innerHTML = outlookServices.map(service => {
+            const aliasCount = service.config?.alias_count || service.config?.aliases?.length || 0;
+            const aliasBadge = aliasCount > 0
+                ? `<span class="status-badge active" title="${aliasCount} 个别名">${aliasCount}</span>`
+                : `<span class="status-badge pending" title="无别名">0</span>`;
+            const authBadge = service.config?.has_oauth
+                ? `<span class="status-badge active" title="OAuth2 已配置">OAuth</span>`
+                : `<span class="status-badge pending" title="未配置 OAuth2">密码</span>`;
+            const oauthBtn = service.config?.has_oauth
+                ? `<button class="btn btn-secondary btn-sm" onclick="authorizeOutlookOAuth(${service.id})" title="更新 OAuth">刷新</button>`
+                : `<button class="btn btn-primary btn-sm" onclick="authorizeOutlookOAuth(${service.id})" title="配置 OAuth2">授权</button>`;
+            return `
             <tr data-id="${service.id}">
                 <td><input type="checkbox" data-id="${service.id}" ${selectedOutlook.has(service.id) ? 'checked' : ''}></td>
                 <td>${escapeHtml(service.config?.email || service.name)}</td>
-                <td>
-                    <span class="status-badge ${service.config?.has_oauth ? 'active' : 'pending'}">
-                        ${service.config?.has_oauth ? 'OAuth' : '密码'}
-                    </span>
-                </td>
+                <td>${aliasBadge}</td>
+                <td>${authBadge}</td>
                 <td title="${service.enabled ? '已启用' : '已禁用'}">${service.enabled ? '✅' : '⭕'}</td>
                 <td>${service.priority}</td>
                 <td>${format.date(service.last_used)}</td>
                 <td>
                     <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
+                        ${oauthBtn}
                         <button class="btn btn-secondary btn-sm" onclick="editOutlookService(${service.id})">编辑</button>
                         <div class="dropdown" style="position:relative;">
                             <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();toggleEmailMoreMenu(this)">更多</button>
@@ -263,8 +296,8 @@ async function loadOutlookServices() {
                         <button class="btn btn-danger btn-sm" onclick="deleteService(${service.id}, '${escapeHtml(service.name)}')">删除</button>
                     </div>
                 </td>
-            </tr>
-        `).join('');
+            </tr>`;
+        }).join('');
 
         elements.outlookTable.querySelectorAll('input[type="checkbox"][data-id]').forEach(cb => {
             cb.addEventListener('change', (e) => {
@@ -804,6 +837,9 @@ async function editOutlookService(id) {
         document.getElementById('edit-outlook-client-id').value = service.config?.client_id || '';
         document.getElementById('edit-outlook-refresh-token').value = '';
         document.getElementById('edit-outlook-refresh-token').placeholder = service.config?.refresh_token ? '已设置，留空保持不变' : 'OAuth Refresh Token';
+        // 别名：从 config 中读取，每行一个
+        const aliases = service.config?.aliases || [];
+        document.getElementById('edit-outlook-aliases').value = aliases.join('\n');
         document.getElementById('edit-outlook-priority').value = service.priority || 0;
         document.getElementById('edit-outlook-enabled').checked = service.enabled;
         elements.editOutlookModal.classList.add('active');
@@ -826,6 +862,10 @@ async function handleEditOutlook(e) {
         return;
     }
 
+    // 解析别名列表
+    const aliasesText = formData.get('aliases') || '';
+    const aliases = aliasesText.split('\n').map(a => a.trim()).filter(a => a);
+
     const updateData = {
         name: formData.get('email'),
         priority: parseInt(formData.get('priority')) || 0,
@@ -834,7 +874,8 @@ async function handleEditOutlook(e) {
             email: formData.get('email'),
             password: formData.get('password')?.trim() || currentService.config?.password || '',
             client_id: formData.get('client_id')?.trim() || currentService.config?.client_id || '',
-            refresh_token: formData.get('refresh_token')?.trim() || currentService.config?.refresh_token || ''
+            refresh_token: formData.get('refresh_token')?.trim() || currentService.config?.refresh_token || '',
+            aliases: aliases,
         }
     };
 
@@ -847,4 +888,75 @@ async function handleEditOutlook(e) {
     } catch (error) {
         toast.error('更新失败: ' + error.message);
     }
+}
+
+// 填充别名导入的服务选择下拉框
+function populateAliasServiceSelect() {
+    const select = elements.aliasServiceSelect;
+    select.innerHTML = outlookServices.map(s =>
+        `<option value="${s.id}">${escapeHtml(s.config?.email || s.name)} (${s.config?.alias_count || 0} 个别名)</option>`
+    ).join('');
+}
+
+// 别名导入
+async function handleAliasImport() {
+    const serviceId = parseInt(elements.aliasServiceSelect.value);
+    const data = elements.aliasImportData.value.trim();
+    if (!serviceId) { toast.error('请选择一个 Outlook 账户'); return; }
+    if (!data) { toast.error('请输入别名列表'); return; }
+
+    const aliases = data.split('\n').map(a => a.trim()).filter(a => a);
+    if (aliases.length === 0) { toast.error('没有有效的别名'); return; }
+
+    elements.aliasImportBtn.disabled = true;
+    elements.aliasImportBtn.textContent = '导入中...';
+
+    try {
+        const result = await api.post(`/email-services/outlook/${serviceId}/aliases`, {
+            aliases: aliases
+        });
+
+        elements.aliasImportResult.style.display = 'block';
+        elements.aliasImportResult.innerHTML = `
+            <div class="import-stats">
+                <span>✅ 成功导入: <strong>${result.alias_count || 0}</strong> 个别名</span>
+            </div>
+        `;
+        toast.success(`成功导入 ${result.alias_count} 个别名`);
+        elements.aliasImportData.value = '';
+        loadOutlookServices();
+        loadStats();
+    } catch (error) {
+        toast.error('别名导入失败: ' + error.message);
+    } finally {
+        elements.aliasImportBtn.disabled = false;
+        elements.aliasImportBtn.textContent = '🏷️ 导入别名';
+    }
+}
+
+// Outlook OAuth2 授权
+function authorizeOutlookOAuth(serviceId) {
+    const authUrl = `/api/email-services/outlook/oauth/authorize?service_id=${serviceId}`;
+    const width = 500;
+    const height = 600;
+    const left = (window.screen.width - width) / 2;
+    const top = (window.screen.height - height) / 2;
+    const win = window.open(
+        authUrl,
+        'outlook_oauth',
+        `width=${width},height=${height},left=${left},top=${top},scrollbars=yes`
+    );
+
+    // 轮询检查授权是否完成
+    const checkInterval = setInterval(() => {
+        if (win.closed) {
+            clearInterval(checkInterval);
+            loadOutlookServices();
+            loadStats();
+        }
+    }, 1000);
+}
+
+function renewOutlookOAuth(serviceId) {
+    authorizeOutlookOAuth(serviceId);
 }

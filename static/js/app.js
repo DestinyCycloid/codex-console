@@ -1128,11 +1128,16 @@ function renderOutlookAccountsList() {
         return;
     }
 
-    const html = outlookAccounts.map(account => `
+    const html = outlookAccounts.map(account => {
+        const aliasCount = account.alias_count || 0;
+        const aliasBadge = aliasCount > 0
+            ? `<span style="background: var(--primary-color); color: white; padding: 1px 6px; border-radius: 8px; font-size: 0.65rem; margin-left: 4px;">${aliasCount}别名</span>`
+            : '';
+        return `
         <label class="outlook-account-item" style="display: flex; align-items: center; padding: var(--spacing-sm); border-bottom: 1px solid var(--border-light); cursor: pointer; ${account.is_registered ? 'opacity: 0.6;' : ''}" data-id="${account.id}" data-registered="${account.is_registered}">
             <input type="checkbox" class="outlook-account-checkbox" value="${account.id}" ${account.is_registered ? '' : 'checked'} style="margin-right: var(--spacing-sm);">
             <div style="flex: 1;">
-                <div style="font-weight: 500;">${escapeHtml(account.email)}</div>
+                <div style="font-weight: 500;">${escapeHtml(account.email)}${aliasBadge}</div>
                 <div style="font-size: 0.75rem; color: var(--text-muted);">
                     ${account.is_registered
                         ? `<span style="color: var(--success-color);">✓ 已注册</span>`
@@ -1141,8 +1146,8 @@ function renderOutlookAccountsList() {
                     ${account.has_oauth ? ' | OAuth' : ''}
                 </div>
             </div>
-        </label>
-    `).join('');
+        </label>`;
+    }).join('');
 
     elements.outlookAccountsContainer.innerHTML = html;
 }
@@ -1216,7 +1221,7 @@ async function handleOutlookBatchRegistration() {
         tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
     };
 
-    addLog('info', `[系统] 正在启动 Outlook 批量注册 (${selectedIds.length} 个账户)...`);
+    addLog('info', `[系统] 正在启动 Outlook 批量注册...`);
 
     try {
         const data = await api.post('/registration/outlook-batch', requestData);

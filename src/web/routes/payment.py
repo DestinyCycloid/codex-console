@@ -145,8 +145,8 @@ def batch_check_subscription(request: BatchCheckSubscriptionRequest):
 
             try:
                 status = check_subscription_status(account, proxy)
-                account.subscription_type = None if status == "free" else status
-                account.subscription_at = datetime.utcnow() if status != "free" else account.subscription_at
+                account.subscription_type = status
+                account.subscription_at = datetime.utcnow() if status != "free" else None
                 db.commit()
                 results["success_count"] += 1
                 results["details"].append(
@@ -173,10 +173,9 @@ def mark_subscription(account_id: int, request: MarkSubscriptionRequest):
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
 
-        account.subscription_type = None if request.subscription_type == "free" else request.subscription_type
+        account.subscription_type = request.subscription_type
         account.subscription_at = datetime.utcnow() if request.subscription_type != "free" else None
         db.commit()
 
     return {"success": True, "subscription_type": request.subscription_type}
-
 

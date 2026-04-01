@@ -261,7 +261,9 @@ class OutlookService(BaseEmailService):
 
     def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        选择可用的 Outlook 账户
+        选择可用的 Outlook 账户（支持别名轮询）
+
+        如果有别名，从别名列表中选择一个；否则使用主邮箱地址。
 
         Args:
             config: 配置参数（未使用）
@@ -273,21 +275,40 @@ class OutlookService(BaseEmailService):
             self.update_status(False, EmailServiceError("没有可用的 Outlook 账户"))
             raise EmailServiceError("没有可用的 Outlook 账户")
 
+        runtime_config = config or self.config or {}
+
         # 轮询选择账户
         with self._account_lock:
             account = self.accounts[self._current_account_index]
             self._current_account_index = (self._current_account_index + 1) % len(self.accounts)
 
+        forced_email = runtime_config.get("selected_email")
+        if forced_email:
+            selected_email = forced_email
+            logger.info(f"选择 Outlook 账户: {account.email}，使用指定邮箱: {selected_email}")
+        # 如果有别名，从别名中选择一个（轮询）
+        elif account.aliases:
+            # 使用账户级别的别名轮询索引
+            if not hasattr(account, '_alias_index'):
+                account._alias_index = 0
+            alias = account.aliases[account._alias_index % len(account.aliases)]
+            account._alias_index = (account._alias_index + 1) % len(account.aliases)
+            selected_email = alias
+            logger.info(f"选择 Outlook 账户: {account.email}，使用别名: {selected_email}")
+        else:
+            selected_email = account.email
+            logger.info(f"选择 Outlook 账户: {account.email}")
+
         email_info = {
-            "email": account.email,
+            "email": selected_email,
             "service_id": account.email,
             "account": {
                 "email": account.email,
-                "has_oauth": account.has_oauth()
+                "has_oauth": account.has_oauth(),
+                "aliases": account.aliases,
             }
         }
 
-        logger.info(f"选择 Outlook 账户: {account.email}")
         self.update_status(True)
         return email_info
 
@@ -312,16 +333,23 @@ class OutlookService(BaseEmailService):
         Returns:
             验证码字符串
         """
-        # 查找对应的账户
+        # 查找对应的账户（通过主邮箱或别名匹配）
         account = None
         for acc in self.accounts:
             if acc.email.lower() == email.lower():
                 account = acc
                 break
+            # 检查是否在别名列表中
+            if any(alias.lower() == email.lower() for alias in acc.aliases):
+                account = acc
+                break
 
         if not account:
             self.update_status(False, EmailServiceError(f"未找到邮箱对应的账户: {email}"))
+            logger.error(f"[{email}] 未找到匹配的账户。当前已配置账户: {[acc.email for acc in self.accounts]}")
             return None
+
+        logger.info(f"[{email}] 匹配到主账户: {account.email} (别名数: {len(account.aliases)})")
 
         # 获取验证码等待配置
         code_settings = get_email_code_settings()
@@ -359,7 +387,7 @@ class OutlookService(BaseEmailService):
                 )
 
                 if emails:
-                    logger.debug(
+                    logger.info(
                         f"[{email}] 第 {poll_count} 次轮询获取到 {len(emails)} 封邮件"
                     )
 
@@ -383,12 +411,14 @@ class OutlookService(BaseEmailService):
 
             except Exception as e:
                 logger.warning(f"[{email}] 检查出错: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
 
             # 等待下次轮询
             time.sleep(poll_interval)
 
         elapsed = int(time.time() - start_time)
-        logger.warning(f"[{email}] 验证码超时 ({actual_timeout}s)，共轮询 {poll_count} 次")
+        logger.warning(f"[{email}] 验证码超时 ({actual_timeout}s)，共轮询 {poll_count} 次，未找到验证码")
         return None
 
     def list_emails(self, **kwargs) -> List[Dict[str, Any]]:

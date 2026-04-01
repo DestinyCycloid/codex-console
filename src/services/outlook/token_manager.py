@@ -20,15 +20,15 @@ logger = logging.getLogger(__name__)
 
 # 各提供者的 Scope 配置
 PROVIDER_SCOPES = {
-    ProviderType.IMAP_OLD: "",  # 旧版 IMAP 不需要特定 scope
+    ProviderType.IMAP_OLD: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
     ProviderType.IMAP_NEW: "https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
     ProviderType.GRAPH_API: "https://graph.microsoft.com/.default",
 }
 
 # 各提供者的 Token 端点
 PROVIDER_TOKEN_URLS = {
-    ProviderType.IMAP_OLD: TokenEndpoint.LIVE.value,
-    ProviderType.IMAP_NEW: TokenEndpoint.CONSUMERS.value,
+    ProviderType.IMAP_OLD: TokenEndpoint.COMMON.value,
+    ProviderType.IMAP_NEW: TokenEndpoint.COMMON.value,
     ProviderType.GRAPH_API: TokenEndpoint.COMMON.value,
 }
 
