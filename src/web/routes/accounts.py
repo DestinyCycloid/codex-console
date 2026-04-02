@@ -106,6 +106,22 @@ def _finalize_account_async_task(
     task_manager.release_domain_slot("accounts", task_id)
 
 
+def _submit_account_async_task(task_id: str, runner, payload: Dict[str, Any]) -> None:
+    try:
+        task_manager.executor.submit(runner, task_id, payload)
+    except Exception as exc:
+        logger.exception("提交 accounts 异步任务失败: task_id=%s error=%s", task_id, exc)
+        task_manager.update_domain_task(
+            "accounts",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=f"任务提交失败: {exc}",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="任务提交失败") from exc
+
+
 def _run_batch_refresh_async(task_id: str, request_data: Dict[str, Any]) -> None:
     acquired, running, quota = task_manager.try_acquire_domain_slot("accounts", task_id)
     if not acquired:
@@ -1782,7 +1798,7 @@ def create_overview_refresh_async_task(request: OverviewRefreshRequest):
         progress={"completed": 0, "total": len(ids)},
         max_retries=3,
     )
-    task_manager.executor.submit(_run_overview_refresh_async, task_id, payload)
+    _submit_account_async_task(task_id, _run_overview_refresh_async, payload)
     return snapshot
 
 
@@ -2412,7 +2428,7 @@ def create_batch_refresh_async_task(request: BatchRefreshRequest):
         progress={"completed": 0, "total": len(ids)},
         max_retries=3,
     )
-    task_manager.executor.submit(_run_batch_refresh_async, task_id, payload)
+    _submit_account_async_task(task_id, _run_batch_refresh_async, payload)
     return snapshot
 
 
@@ -2506,7 +2522,7 @@ def create_batch_validate_async_task(request: BatchValidateRequest):
         progress={"completed": 0, "total": len(ids)},
         max_retries=3,
     )
-    task_manager.executor.submit(_run_batch_validate_async, task_id, payload)
+    _submit_account_async_task(task_id, _run_batch_validate_async, payload)
     return snapshot
 
 
