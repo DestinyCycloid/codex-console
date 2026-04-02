@@ -119,6 +119,22 @@ def _finalize_payment_async_task(
     task_manager.release_domain_slot("payment", task_id)
 
 
+def _submit_payment_async_task(task_id: str, runner, payload: Dict[str, Any]) -> None:
+    try:
+        task_manager.executor.submit(runner, task_id, payload)
+    except Exception as exc:
+        logger.exception("提交 payment 异步任务失败: task_id=%s error=%s", task_id, exc)
+        task_manager.update_domain_task(
+            "payment",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=f"任务提交失败: {exc}",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="任务提交失败") from exc
+
+
 def _is_retryable_subscription_check_error(error_message: Optional[str]) -> bool:
     text = str(error_message or "").strip().lower()
     if not text:
@@ -3564,7 +3580,7 @@ def create_batch_check_subscription_async_task(request: BatchCheckSubscriptionRe
         progress={"completed": 0, "total": len(ids)},
         max_retries=3,
     )
-    task_manager.executor.submit(_run_batch_check_subscription_async, task_id, payload)
+    _submit_payment_async_task(task_id, _run_batch_check_subscription_async, payload)
     return snapshot
 
 
