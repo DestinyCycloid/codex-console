@@ -335,13 +335,13 @@
                     </div>
 
                     <div class="toolbar-right">
-                        <button class="btn btn-warning" id="batch-refresh-btn" disabled title="批量刷新Token">
+                        <button class="btn btn-warning" id="batch-refresh-btn" disabled title="用途：批量刷新所选账号的 Token。&#10;逻辑：按当前勾选或筛选结果创建批量任务，逐个执行刷新，完成后回写结果并刷新列表。">
                             🔄 刷新Token
                         </button>
-                        <button class="btn btn-info" id="batch-validate-btn" disabled title="批量验证Token">
+                        <button class="btn btn-info" id="batch-validate-btn" disabled title="用途：批量验证所选账号的 Token 是否仍然可用。&#10;逻辑：按当前勾选或筛选结果创建批量任务，逐个校验有效性，并汇总有效和无效数量。">
                             ✅ 验证Token
                         </button>
-                        <button class="btn btn-info" id="batch-check-sub-btn" disabled title="批量检测订阅状态">
+                        <button class="btn btn-info" id="batch-check-sub-btn" disabled title="用途：批量检查所选账号的订阅状态。&#10;逻辑：按当前勾选或筛选结果创建批量任务，逐个请求订阅信息，并回写 Free、Plus 或 Team 状态。">
                             🔍 检测订阅
                         </button>
                         <button class="btn btn-secondary" id="batch-pause-btn" disabled title="暂停当前批量任务">
@@ -564,7 +564,6 @@
     {% include "partials/site_footer.html" %}
 </body>
 </html>
-
 
 
 
