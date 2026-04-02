@@ -126,35 +126,115 @@
         .subscription-status.team .label { color: var(--primary-color); }
         .subscription-status.free .dot { background: var(--danger-color); }
         .subscription-status.free .label { color: var(--danger-color); }
-        .codex-auth-panel {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: flex-start;
+        .codex-auth-workbench-entry {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
         }
-        .codex-auth-panel-copy {
+        .codex-auth-workbench-entry .btn {
+            white-space: nowrap;
+        }
+        .codex-auth-workbench-modal .modal-content {
+            max-width: 960px;
+        }
+        .codex-auth-workbench-copy {
             display: flex;
             flex-direction: column;
-            gap: 4px;
-            max-width: 420px;
+            gap: 6px;
         }
-        .codex-auth-panel-copy h3 {
-            font-size: 0.95rem;
+        .codex-auth-workbench-copy h3 {
+            font-size: 1.05rem;
             font-weight: 700;
             color: var(--text-primary);
         }
-        .codex-auth-panel-copy p {
-            font-size: 0.82rem;
+        .codex-auth-workbench-copy p {
+            font-size: 0.88rem;
             color: var(--text-secondary);
             line-height: 1.55;
+        }
+        .codex-auth-workbench-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 6px;
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+        }
+        .codex-auth-workbench-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+            gap: 20px;
+        }
+        .codex-auth-workbench-actions {
+            display: grid;
+            gap: 12px;
+        }
+        .codex-auth-action-card {
+            display: grid;
+            gap: 10px;
+            padding: 16px 18px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: var(--surface-hover);
+        }
+        .codex-auth-action-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .codex-auth-action-card h4 {
+            margin: 0;
+            font-size: 0.92rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .codex-auth-action-card p {
+            margin: 0;
+            font-size: 0.84rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+        .codex-auth-action-card .btn {
+            min-width: 108px;
+        }
+        .codex-auth-workbench-side {
+            display: grid;
+            gap: 12px;
+        }
+        .codex-auth-side-card {
+            display: grid;
+            gap: 10px;
+            padding: 16px 18px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: var(--surface);
+        }
+        .codex-auth-side-card h4 {
+            margin: 0;
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .codex-auth-side-card p,
+        .codex-auth-side-card li {
+            margin: 0;
+            font-size: 0.84rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+        .codex-auth-side-card ul {
+            margin: 0;
+            padding-left: 18px;
+            display: grid;
+            gap: 8px;
         }
         .codex-auth-toolbar {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
             align-items: center;
-            justify-content: flex-end;
+            justify-content: flex-start;
         }
         .codex-auth-badge {
             display: inline-flex;
@@ -204,6 +284,11 @@
         }
         .codex-auth-modal-summary strong {
             color: var(--text-primary);
+        }
+        @media (max-width: 960px) {
+            .codex-auth-workbench-layout {
+                grid-template-columns: 1fr;
+            }
         }
         .account-label-badge {
             display: inline-flex;
@@ -476,24 +561,14 @@
                                 <a href="#" class="dropdown-item" data-format="sub2api">导出 Sub2Api 格式</a>
                             </div>
                         </div>
+                        <div class="codex-auth-workbench-entry">
+                            <button class="btn btn-secondary" id="codex-auth-workbench-btn">
+                                Codex Auth
+                            </button>
+                        </div>
                         <button class="btn btn-secondary" id="auto-quick-refresh-settings-btn" title="定时自动一键刷新设置">
                             ⚙️ 定时
                         </button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card toolbar-card">
-                <div class="card-body codex-auth-panel">
-                    <div class="codex-auth-panel-copy">
-                        <h3>Codex Auth 工作台</h3>
-                        <p>独立管理标准 Codex Managed Auth。用于批量审计残缺账号、严格修复、生成标准 auth.json，以及导出给官方 Codex 或 codex-auth 使用。</p>
-                    </div>
-                    <div class="codex-auth-toolbar">
-                        <button class="btn btn-secondary" id="codex-auth-audit-btn" disabled>批量审计</button>
-                        <button class="btn btn-warning" id="codex-auth-repair-btn" disabled>批量修复</button>
-                        <button class="btn btn-info" id="codex-auth-generate-btn" disabled>批量生成</button>
-                        <button class="btn btn-primary" id="codex-auth-export-btn" disabled>批量导出</button>
                     </div>
                 </div>
             </div>
@@ -545,6 +620,75 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <div class="modal codex-auth-workbench-modal" id="codex-auth-workbench-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Codex Auth 工作台</h3>
+                <button class="modal-close" id="close-codex-auth-workbench-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="codex-auth-workbench-layout">
+                    <div class="codex-auth-workbench-actions">
+                        <div class="codex-auth-workbench-copy">
+                            <h3>独立工作空间</h3>
+                            <p>这里专门处理残缺账号的 Codex Managed Auth 审计、严格修复、标准 auth.json 生成和导出，不和日常账号运维按钮混在一起。</p>
+                            <div class="codex-auth-workbench-meta">
+                                <span>当前目标数量：</span>
+                                <strong id="codex-auth-selection-count">0</strong>
+                            </div>
+                        </div>
+                        <div class="codex-auth-action-card">
+                            <div class="codex-auth-action-card-header">
+                                <h4>批量审计</h4>
+                                <button class="btn btn-secondary" id="codex-auth-audit-btn" disabled>开始审计</button>
+                            </div>
+                            <p>逐个账号走严格 Codex Auth 探测链路，识别哪些账号还能修，哪些账号已经被 add-phone 门控挡住。</p>
+                        </div>
+                        <div class="codex-auth-action-card">
+                            <div class="codex-auth-action-card-header">
+                                <h4>批量修复</h4>
+                                <button class="btn btn-warning" id="codex-auth-repair-btn" disabled>开始修复</button>
+                            </div>
+                            <p>对残缺账号执行完整 OTP、workspace、callback 登录链。只有拿到完整 token bundle 才算修复成功。</p>
+                        </div>
+                        <div class="codex-auth-action-card">
+                            <div class="codex-auth-action-card-header">
+                                <h4>批量生成</h4>
+                                <button class="btn btn-info" id="codex-auth-generate-btn" disabled>开始生成</button>
+                            </div>
+                            <p>为已经完整的账号生成标准 managed `auth.json` artifact，不触发重新登录。</p>
+                        </div>
+                        <div class="codex-auth-action-card">
+                            <div class="codex-auth-action-card-header">
+                                <h4>批量导出</h4>
+                                <button class="btn btn-primary" id="codex-auth-export-btn" disabled>开始导出</button>
+                            </div>
+                            <p>导出标准 `auth.json` ZIP，兼容官方 Codex 和 `codex-auth` 的导入场景。</p>
+                        </div>
+                    </div>
+                    <div class="codex-auth-workbench-side">
+                        <div class="codex-auth-side-card">
+                            <h4>当前工作流</h4>
+                            <ul>
+                                <li>先在账号表里勾选目标账号，或先用筛选条件缩小范围。</li>
+                                <li>打开工作台后，根据目的选择审计、修复、生成或导出。</li>
+                                <li>真正执行前会再弹一次确认窗口，避免误操作。</li>
+                            </ul>
+                        </div>
+                        <div class="codex-auth-side-card">
+                            <h4>设计边界</h4>
+                            <ul>
+                                <li>不把 session-only 结果误判成修复成功。</li>
+                                <li>被 `add-phone` 拦截的账号会保留明确失败原因。</li>
+                                <li>标准导出只包含关键 token 完整的账号。</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="modal" id="codex-auth-modal">
@@ -702,4 +846,3 @@
     {% include "partials/site_footer.html" %}
 </body>
 </html>
-

@@ -303,6 +303,10 @@ const elements = {
     closeAutoQuickRefreshModalBtn: document.getElementById('close-auto-quick-refresh-modal'),
     cancelAutoQuickRefreshBtn: document.getElementById('cancel-auto-quick-refresh-btn'),
     saveAutoQuickRefreshBtn: document.getElementById('save-auto-quick-refresh-btn'),
+    codexAuthWorkbenchBtn: document.getElementById('codex-auth-workbench-btn'),
+    codexAuthWorkbenchModal: document.getElementById('codex-auth-workbench-modal'),
+    closeCodexAuthWorkbenchModalBtn: document.getElementById('close-codex-auth-workbench-modal'),
+    codexAuthSelectionCount: document.getElementById('codex-auth-selection-count'),
     codexAuthAuditBtn: document.getElementById('codex-auth-audit-btn'),
     codexAuthRepairBtn: document.getElementById('codex-auth-repair-btn'),
     codexAuthGenerateBtn: document.getElementById('codex-auth-generate-btn'),
@@ -381,6 +385,7 @@ function initEventListeners() {
     elements.batchCheckSubBtn.addEventListener('click', handleBatchCheckSubscription);
     elements.batchPauseBtn?.addEventListener('click', pauseActiveBatchTasks);
     elements.batchResumeBtn?.addEventListener('click', resumeActiveBatchTasks);
+    elements.codexAuthWorkbenchBtn?.addEventListener('click', openCodexAuthWorkbenchModal);
     elements.codexAuthAuditBtn?.addEventListener('click', () => openCodexAuthModal('audit'));
     elements.codexAuthRepairBtn?.addEventListener('click', () => openCodexAuthModal('repair'));
     elements.codexAuthGenerateBtn?.addEventListener('click', () => openCodexAuthModal('generate'));
@@ -477,6 +482,12 @@ function initEventListeners() {
     elements.autoQuickRefreshModal?.addEventListener('click', (e) => {
         if (e.target === elements.autoQuickRefreshModal) {
             closeAutoQuickRefreshModal();
+        }
+    });
+    elements.closeCodexAuthWorkbenchModalBtn?.addEventListener('click', closeCodexAuthWorkbenchModal);
+    elements.codexAuthWorkbenchModal?.addEventListener('click', (e) => {
+        if (e.target === elements.codexAuthWorkbenchModal) {
+            closeCodexAuthWorkbenchModal();
         }
     });
     elements.closeCodexAuthModalBtn?.addEventListener('click', closeCodexAuthModal);
@@ -1106,6 +1117,22 @@ function closeCodexAuthModal() {
     elements.codexAuthModal?.classList.remove('active');
 }
 
+function openCodexAuthWorkbenchModal() {
+    syncCodexAuthWorkbenchState();
+    elements.codexAuthWorkbenchModal?.classList.add('active');
+}
+
+function closeCodexAuthWorkbenchModal() {
+    elements.codexAuthWorkbenchModal?.classList.remove('active');
+}
+
+function syncCodexAuthWorkbenchState() {
+    const count = getEffectiveCount();
+    if (elements.codexAuthSelectionCount) {
+        elements.codexAuthSelectionCount.textContent = String(count);
+    }
+}
+
 function openCodexAuthModal(action) {
     const count = getEffectiveCount();
     if (count === 0) {
@@ -1158,6 +1185,7 @@ function openCodexAuthModal(action) {
     elements.codexAuthModalCount.textContent = String(count);
     elements.codexAuthModalNote.textContent = def.note;
     elements.confirmCodexAuthModalBtn.textContent = def.confirmText;
+    syncCodexAuthWorkbenchState();
     elements.codexAuthModal.classList.add('active');
 }
 
@@ -1309,27 +1337,31 @@ async function exportCodexAuthArtifacts() {
 function updateBatchButtons() {
     const count = getEffectiveCount();
     const baseDisabled = count === 0 || isQuickWorkflowRunning || isTaskPausing || isTaskResuming;
+    syncCodexAuthWorkbenchState();
     elements.batchDeleteBtn.disabled = baseDisabled;
     elements.batchRefreshBtn.disabled = baseDisabled || isBatchRefreshing;
     elements.batchValidateBtn.disabled = baseDisabled || isBatchValidating;
     elements.batchUploadBtn.disabled = baseDisabled;
     elements.batchCheckSubBtn.disabled = baseDisabled || isBatchCheckingSubscription;
     elements.exportBtn.disabled = count === 0;
+    if (elements.codexAuthWorkbenchBtn) {
+        elements.codexAuthWorkbenchBtn.disabled = false;
+    }
     if (elements.codexAuthAuditBtn) {
         elements.codexAuthAuditBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
-        elements.codexAuthAuditBtn.textContent = isCodexAuthAuditing ? '审计中...' : '批量审计';
+        elements.codexAuthAuditBtn.textContent = isCodexAuthAuditing ? '审计中...' : '开始审计';
     }
     if (elements.codexAuthRepairBtn) {
         elements.codexAuthRepairBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
-        elements.codexAuthRepairBtn.textContent = isCodexAuthRepairing ? '修复中...' : '批量修复';
+        elements.codexAuthRepairBtn.textContent = isCodexAuthRepairing ? '修复中...' : '开始修复';
     }
     if (elements.codexAuthGenerateBtn) {
         elements.codexAuthGenerateBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
-        elements.codexAuthGenerateBtn.textContent = isCodexAuthGenerating ? '生成中...' : '批量生成';
+        elements.codexAuthGenerateBtn.textContent = isCodexAuthGenerating ? '生成中...' : '开始生成';
     }
     if (elements.codexAuthExportBtn) {
         elements.codexAuthExportBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
-        elements.codexAuthExportBtn.textContent = isCodexAuthExporting ? '导出中...' : '批量导出';
+        elements.codexAuthExportBtn.textContent = isCodexAuthExporting ? '导出中...' : '开始导出';
     }
     if (elements.quickRefreshBtn) {
         elements.quickRefreshBtn.disabled = true;
