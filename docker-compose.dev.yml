@@ -3,10 +3,8 @@ services:
     build: .
     shm_size: "1gb"
     ports:
-      - "15555:1455"
-      - "6080:6080"
-      # 如需使用 VNC 客户端直连可打开：
-      # - "5900:5900"
+      - "16666:1455"
+      - "6081:6080"
     environment:
       - WEBUI_HOST=0.0.0.0
       - WEBUI_PORT=1455
@@ -16,10 +14,8 @@ services:
       - NOVNC_PORT=6080
       - DEBUG=0
       - LOG_LEVEL=info
-      # 如果需要访问密码，可以在这里取消注释并设置
       - WEBUI_ACCESS_PASSWORD=admin123
     volumes:
-      # 挂载数据目录以持久化数据库和日志
-      - ./data:/app/data
-      - ./logs:/app/logs
+      - ./data-dev:/app/data
+      - ./logs-dev:/app/logs
     restart: unless-stopped

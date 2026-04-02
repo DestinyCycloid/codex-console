@@ -397,6 +397,7 @@ async function loadSettings() {
         const entryFlowRaw = String(data.registration?.entry_flow || 'native').toLowerCase();
         const entryFlow = entryFlowRaw === 'abcard' ? 'abcard' : 'native';
         document.getElementById('registration-entry-flow').value = entryFlow;
+        document.getElementById('registration-wait-strategy').value = data.registration?.wait_strategy || 'start';
         document.getElementById('sleep-min').value = data.registration?.sleep_min || 5;
         document.getElementById('sleep-max').value = data.registration?.sleep_max || 30;
 
@@ -554,6 +555,7 @@ async function handleSaveRegistration(e) {
         timeout: parseInt(document.getElementById('timeout').value),
         default_password_length: parseInt(document.getElementById('password-length').value),
         entry_flow: document.getElementById('registration-entry-flow').value || 'native',
+        wait_strategy: document.getElementById('registration-wait-strategy').value || 'start',
         sleep_min: parseInt(document.getElementById('sleep-min').value),
         sleep_max: parseInt(document.getElementById('sleep-max').value),
     };

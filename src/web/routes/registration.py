@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ...config.constants import (
     RoleTag,
+    RegistrationWaitStrategy,
     normalize_role_tag,
+    normalize_registration_wait_strategy,
     role_tag_to_account_label,
 )
 from ...database import crud
@@ -41,6 +43,20 @@ router = APIRouter()
 running_tasks: dict = {}
 # 批量任务存储
 batch_tasks: Dict[str, dict] = {}
+
+
+def _wait_strategy_label(strategy: str) -> str:
+    normalized = normalize_registration_wait_strategy(strategy)
+    if normalized == RegistrationWaitStrategy.COMPLETION.value:
+        return "完成间隔"
+    return "启动间隔"
+
+
+def _current_wait_strategy(settings: Optional[Settings] = None) -> str:
+    current_settings = settings or get_settings()
+    return normalize_registration_wait_strategy(
+        getattr(current_settings, "registration_wait_strategy", RegistrationWaitStrategy.START.value)
+    )
 
 
 def _cancel_batch_tasks(batch_id: str) -> None:
@@ -968,6 +984,7 @@ async def run_batch_pipeline(
     interval_min: int,
     interval_max: int,
     concurrency: int,
+    wait_strategy: str = RegistrationWaitStrategy.START.value,
     auto_upload_cpa: bool = False,
     cpa_service_ids: List[int] = None,
     auto_upload_sub2api: bool = False,
@@ -986,7 +1003,11 @@ async def run_batch_pipeline(
     semaphore = asyncio.Semaphore(concurrency)
     counter_lock = asyncio.Lock()
     running_tasks_list = []
-    add_batch_log(f"[系统] 流水线模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}")
+    launch_state = {"launched": 0}
+    normalized_wait_strategy = normalize_registration_wait_strategy(wait_strategy)
+    add_batch_log(
+        f"[系统] 流水线模式启动，并发数: {concurrency}，总任务: {len(task_uuids)}，等待策略: {_wait_strategy_label(normalized_wait_strategy)}"
+    )
 
     async def _run_and_release(idx: int, uuid: str, pfx: str):
         try:
@@ -1014,6 +1035,21 @@ async def run_batch_pipeline(
                             add_batch_log(f"{pfx} [失败] 注册失败: {t.error_message}")
                         update_batch_status(completed=new_completed, success=new_success, failed=new_failed)
         finally:
+            should_delay_release = (
+                normalized_wait_strategy == RegistrationWaitStrategy.COMPLETION.value
+                and launch_state["launched"] < len(task_uuids)
+                and not task_manager.is_batch_cancelled(batch_id)
+            )
+            if should_delay_release:
+                wait_time = random.randint(interval_min, interval_max)
+                add_batch_log(f"{pfx} 完成后等待 {wait_time} 秒，再启动后续任务")
+                logger.info(
+                    "批量任务 %s: 任务 %s 完成后等待 %s 秒再释放并发槽",
+                    batch_id,
+                    uuid,
+                    wait_time,
+                )
+                await asyncio.sleep(wait_time)
             semaphore.release()
 
     try:
@@ -1035,9 +1071,15 @@ async def run_batch_pipeline(
             add_batch_log(f"{prefix} 开始注册...")
             t = asyncio.create_task(_run_and_release(i, task_uuid, prefix))
             running_tasks_list.append(t)
+            launch_state["launched"] = i + 1
 
-            if i < len(task_uuids) - 1 and not task_manager.is_batch_cancelled(batch_id):
+            if (
+                normalized_wait_strategy == RegistrationWaitStrategy.START.value
+                and i < len(task_uuids) - 1
+                and not task_manager.is_batch_cancelled(batch_id)
+            ):
                 wait_time = random.randint(interval_min, interval_max)
+                add_batch_log(f"[系统] 等待 {wait_time} 秒后启动下一个任务")
                 logger.info(f"批量任务 {batch_id}: 等待 {wait_time} 秒后启动下一个任务")
                 await asyncio.sleep(wait_time)
 
@@ -1087,6 +1129,7 @@ async def run_batch_registration(
     interval_max: int,
     concurrency: int = 1,
     mode: str = "pipeline",
+    wait_strategy: str = RegistrationWaitStrategy.START.value,
     auto_upload_cpa: bool = False,
     cpa_service_ids: List[int] = None,
     auto_upload_sub2api: bool = False,
@@ -1113,6 +1156,7 @@ async def run_batch_registration(
             batch_id, task_uuids, email_service_type, proxy,
             email_service_config, email_service_id,
             interval_min, interval_max, concurrency,
+            wait_strategy=wait_strategy,
             auto_upload_cpa=auto_upload_cpa, cpa_service_ids=cpa_service_ids,
             auto_upload_sub2api=auto_upload_sub2api, sub2api_service_ids=sub2api_service_ids,
             auto_upload_tm=auto_upload_tm, tm_service_ids=tm_service_ids,
@@ -1135,6 +1179,7 @@ async def run_auto_registration_batch(plan, settings: Settings) -> str:
     interval_min = max(0, int(settings.registration_auto_interval_min))
     interval_max = max(interval_min, int(settings.registration_auto_interval_max))
     concurrency = max(1, int(settings.registration_auto_concurrency))
+    wait_strategy = _current_wait_strategy(settings)
     email_service_id = int(settings.registration_auto_email_service_id or 0) or None
     proxy = settings.registration_auto_proxy.strip() or None
 
@@ -1178,6 +1223,7 @@ async def run_auto_registration_batch(plan, settings: Settings) -> str:
         interval_max=interval_max,
         concurrency=concurrency,
         mode=mode,
+        wait_strategy=wait_strategy,
         auto_upload_cpa=True,
         cpa_service_ids=[plan.cpa_service_id],
         auto_upload_sub2api=False,
@@ -1339,6 +1385,7 @@ async def _start_batch_registration_internal(
         request.interval_max,
         request.concurrency,
         request.mode,
+        _current_wait_strategy(),
         request.auto_upload_cpa,
         request.cpa_service_ids,
         request.auto_upload_sub2api,
@@ -1432,6 +1479,7 @@ async def _start_outlook_batch_registration_internal(
         request.interval_max,
         request.concurrency,
         request.mode,
+        _current_wait_strategy(),
         request.auto_upload_cpa,
         request.cpa_service_ids,
         request.auto_upload_sub2api,
@@ -2084,6 +2132,7 @@ async def run_outlook_batch_registration(
     interval_max: int,
     concurrency: int = 1,
     mode: str = "pipeline",
+    wait_strategy: str = RegistrationWaitStrategy.START.value,
     auto_upload_cpa: bool = False,
     cpa_service_ids: List[int] = None,
     auto_upload_sub2api: bool = False,
@@ -2129,6 +2178,7 @@ async def run_outlook_batch_registration(
         interval_max=interval_max,
         concurrency=concurrency,
         mode=mode,
+        wait_strategy=wait_strategy,
         auto_upload_cpa=auto_upload_cpa,
         cpa_service_ids=cpa_service_ids,
         auto_upload_sub2api=auto_upload_sub2api,
@@ -2371,4 +2421,3 @@ async def delete_scheduled_registration_job(job_uuid: str):
             raise HTTPException(status_code=400, detail="无法删除执行中的计划任务")
         crud.delete_scheduled_registration_job(db, job_uuid)
         return {'success': True, 'message': '计划任务已删除'}
-
