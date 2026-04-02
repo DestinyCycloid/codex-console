@@ -30,16 +30,20 @@ exit code 0
 Isolated instance:
 
 - URL: `http://127.0.0.1:16667`
-- Access password: `admin123`
+- Access password: set `REVIEW_LOGIN_PASSWORD` in the local shell before running the script
 
 Command:
 
 ```bash
 python3 - <<'PY'
 import urllib.parse, urllib.request, http.cookiejar, json
+import os
 jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-login_data = urllib.parse.urlencode({'password': 'admin123'}).encode()
+password = os.environ.get('REVIEW_LOGIN_PASSWORD', '').strip()
+if not password:
+    raise SystemExit('REVIEW_LOGIN_PASSWORD is required')
+login_data = urllib.parse.urlencode({'password': password}).encode()
 login_req = urllib.request.Request('http://127.0.0.1:16667/login', data=login_data, method='POST')
 login_req.add_header('Content-Type', 'application/x-www-form-urlencoded')
 login_resp = opener.open(login_req, timeout=10)

@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 import time
 from urllib.parse import urlparse, urlunparse
@@ -66,6 +66,7 @@ REGION_BLOCK_ERROR_KEYWORDS = (
     "request_forbidden",
 )
 _PAYMENT_TASK_POLL_INTERVAL_SECONDS = 0.25
+_PAYMENT_TASK_PAUSE_MAX_WAIT_SECONDS = 3600.0
 
 
 def _payment_task_id(task_type: str) -> str:
@@ -80,13 +81,16 @@ def _get_payment_task_or_404(task_id: str) -> Dict[str, Any]:
     return snapshot
 
 
-def _wait_payment_task_if_paused(task_id: str) -> bool:
+def _wait_payment_task_if_paused(task_id: str) -> Tuple[bool, Optional[str]]:
+    pause_started_at = time.monotonic()
     while True:
         snapshot = task_manager.get_domain_task("payment", task_id) or {}
         if bool(snapshot.get("cancel_requested")):
-            return False
+            return False, "cancelled"
         if not bool(snapshot.get("pause_requested")):
-            return True
+            return True, None
+        if time.monotonic() - pause_started_at >= _PAYMENT_TASK_PAUSE_MAX_WAIT_SECONDS:
+            return False, "timeout"
         task_manager.update_domain_task(
             "payment",
             task_id,
@@ -3345,11 +3349,11 @@ def _run_batch_check_subscription_async(task_id: str, request_data: Dict[str, An
         )
         return
 
-    request = BatchCheckSubscriptionRequest(**request_data)
-    explicit_proxy = _normalize_proxy_value(request.proxy)
     result = {"success_count": 0, "failed_count": 0, "details": []}
 
     try:
+        request = BatchCheckSubscriptionRequest(**request_data)
+        explicit_proxy = _normalize_proxy_value(request.proxy)
         with get_db() as db:
             ids = resolve_account_ids(
                 db, request.ids, request.select_all,
@@ -3377,7 +3381,17 @@ def _run_batch_check_subscription_async(task_id: str, request_data: Dict[str, An
                         result=result,
                     )
                     return
-                if not _wait_payment_task_if_paused(task_id):
+                should_continue, pause_exit_reason = _wait_payment_task_if_paused(task_id)
+                if not should_continue:
+                    if pause_exit_reason == "timeout":
+                        _finalize_payment_async_task(
+                            task_id,
+                            status="failed",
+                            message="批量检测订阅暂停超时，任务已终止",
+                            result=result,
+                            error="任务暂停超时",
+                        )
+                        return
                     _finalize_payment_async_task(
                         task_id,
                         status="cancelled",
@@ -3431,6 +3445,7 @@ def _run_batch_check_subscription_async(task_id: str, request_data: Dict[str, An
                             }
                         )
                     except Exception as exc:
+                        db.rollback()
                         result["failed_count"] += 1
                         detail["error"] = str(exc)
 

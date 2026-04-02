@@ -363,47 +363,59 @@ def _run_batch_codex_auth_audit_async(task_id: str, request_data: Dict[str, Any]
                 email_service_filter=request.email_service_filter,
                 search_filter=request.search_filter,
             )
-            total = len(accounts)
+            account_ids = [account.id for account in accounts]
+
+        total = len(account_ids)
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="running",
+            started_at=datetime.utcnow().isoformat(),
+            paused=False,
+            message="Codex Auth 批量审计执行中",
+            progress={"completed": 0, "total": total},
+        )
+
+        for index, account_id in enumerate(account_ids, start=1):
+            if task_manager.is_domain_task_cancel_requested("codex_auth", task_id):
+                _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
+                return
+            if not _wait_codex_auth_task_if_paused(task_id):
+                _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
+                return
+
             task_manager.update_domain_task(
                 "codex_auth",
                 task_id,
                 status="running",
-                started_at=datetime.utcnow().isoformat(),
                 paused=False,
-                message="Codex Auth 批量审计执行中",
-                progress={"completed": 0, "total": total},
+                message=f"正在审计第 {index}/{total} 个账号",
             )
-
-            for index, account in enumerate(accounts, start=1):
-                if task_manager.is_domain_task_cancel_requested("codex_auth", task_id):
-                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
-                    return
-                if not _wait_codex_auth_task_if_paused(task_id):
-                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
-                    return
-
-                task_manager.update_domain_task(
-                    "codex_auth",
-                    task_id,
-                    status="running",
-                    paused=False,
-                    message=f"正在审计第 {index}/{total} 个账号",
-                )
-                detail, _ = _run_codex_auth_online_probe(db, account, request_proxy=request.proxy)
-                detail = detail or {
-                    "id": account.id,
-                    "email": account.email,
-                    "success": False,
-                    "health": "unknown",
-                    "reason": "审计执行失败",
-                }
-                if detail.get("success"):
-                    result["success_count"] += 1
+            with get_db() as db:
+                account = crud.get_account_by_id(db, account_id)
+                if not account:
+                    detail = {
+                        "id": account_id,
+                        "success": False,
+                        "health": "unknown",
+                        "reason": "账号不存在",
+                    }
                 else:
-                    result["failed_count"] += 1
-                result["details"].append(detail)
-                task_manager.append_domain_task_detail("codex_auth", task_id, detail)
-                task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+                    detail, _ = _run_codex_auth_online_probe(db, account, request_proxy=request.proxy)
+                    detail = detail or {
+                        "id": account.id,
+                        "email": account.email,
+                        "success": False,
+                        "health": "unknown",
+                        "reason": "审计执行失败",
+                    }
+            if detail.get("success"):
+                result["success_count"] += 1
+            else:
+                result["failed_count"] += 1
+            result["details"].append(detail)
+            task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+            task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
 
         _finalize_codex_auth_async_task(
             task_id,
@@ -483,6 +495,7 @@ def _run_batch_codex_auth_generate_async(task_id: str, request_data: Dict[str, A
                     )
                     result["success_count"] += 1
                 except Exception as exc:
+                    db.rollback()
                     status = resolve_codex_auth_status(account)
                     update_codex_auth_extra(
                         account,
@@ -591,6 +604,7 @@ def _run_batch_codex_auth_repair_async(task_id: str, request_data: Dict[str, Any
                         )
                         result["success_count"] += 1
                     except Exception as exc:
+                        db.rollback()
                         detail.update({"health": status.health, "reason": str(exc)})
                         result["failed_count"] += 1
                     result["details"].append(detail)
@@ -682,11 +696,11 @@ def _run_batch_refresh_async(task_id: str, request_data: Dict[str, Any]) -> None
         )
         return
 
-    request = BatchRefreshRequest(**request_data)
-    proxy = _get_proxy(request.proxy)
     result = {"success_count": 0, "failed_count": 0, "errors": [], "details": []}
 
     try:
+        request = BatchRefreshRequest(**request_data)
+        proxy = _get_proxy(request.proxy)
         with get_db() as db:
             ids = resolve_account_ids(
                 db, request.ids, request.select_all,
@@ -783,11 +797,11 @@ def _run_batch_validate_async(task_id: str, request_data: Dict[str, Any]) -> Non
         )
         return
 
-    request = BatchValidateRequest(**request_data)
-    proxy = _get_proxy(request.proxy)
     result = {"valid_count": 0, "invalid_count": 0, "details": []}
 
     try:
+        request = BatchValidateRequest(**request_data)
+        proxy = _get_proxy(request.proxy)
         with get_db() as db:
             ids = resolve_account_ids(
                 db, request.ids, request.select_all,
@@ -905,11 +919,11 @@ def _run_overview_refresh_async(task_id: str, request_data: Dict[str, Any]) -> N
         )
         return
 
-    request = OverviewRefreshRequest(**request_data)
-    proxy = _get_proxy(request.proxy)
     result = {"success_count": 0, "failed_count": 0, "details": []}
 
     try:
+        request = OverviewRefreshRequest(**request_data)
+        proxy = _get_proxy(request.proxy)
         ids = _resolve_overview_account_ids(request)
         total = len(ids)
         task_manager.update_domain_task(
@@ -922,33 +936,33 @@ def _run_overview_refresh_async(task_id: str, request_data: Dict[str, Any]) -> N
             progress={"completed": 0, "total": total},
         )
 
-        with get_db() as db:
-            for index, account_id in enumerate(ids, start=1):
-                if task_manager.is_domain_task_cancel_requested("accounts", task_id):
-                    _finalize_account_async_task(
-                        task_id,
-                        status="cancelled",
-                        message="账号总览刷新已取消",
-                        result=result,
-                    )
-                    return
-                if not _wait_account_task_if_paused(task_id):
-                    _finalize_account_async_task(
-                        task_id,
-                        status="cancelled",
-                        message="账号总览刷新已取消",
-                        result=result,
-                    )
-                    return
-
-                task_manager.update_domain_task(
-                    "accounts",
+        for index, account_id in enumerate(ids, start=1):
+            if task_manager.is_domain_task_cancel_requested("accounts", task_id):
+                _finalize_account_async_task(
                     task_id,
-                    status="running",
-                    paused=False,
-                    message=f"正在刷新第 {index}/{total} 个总览",
+                    status="cancelled",
+                    message="账号总览刷新已取消",
+                    result=result,
                 )
+                return
+            if not _wait_account_task_if_paused(task_id):
+                _finalize_account_async_task(
+                    task_id,
+                    status="cancelled",
+                    message="账号总览刷新已取消",
+                    result=result,
+                )
+                return
 
+            task_manager.update_domain_task(
+                "accounts",
+                task_id,
+                status="running",
+                paused=False,
+                message=f"正在刷新第 {index}/{total} 个总览",
+            )
+
+            with get_db() as db:
                 account = crud.get_account_by_id(db, account_id)
                 detail: Dict[str, Any] = {"id": account_id, "success": False}
                 if not account:
@@ -975,9 +989,9 @@ def _run_overview_refresh_async(task_id: str, request_data: Dict[str, Any]) -> N
                         detail["success"] = True
                         detail["plan_type"] = overview.get("plan_type")
 
-                result["details"].append(detail)
-                task_manager.append_domain_task_detail("accounts", task_id, detail)
-                task_manager.set_domain_task_progress("accounts", task_id, completed=index, total=total)
+            result["details"].append(detail)
+            task_manager.append_domain_task_detail("accounts", task_id, detail)
+            task_manager.set_domain_task_progress("accounts", task_id, completed=index, total=total)
 
         _finalize_account_async_task(
             task_id,

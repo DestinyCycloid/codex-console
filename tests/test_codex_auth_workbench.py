@@ -5,6 +5,7 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from src.core.openai import codex_auth_workbench as workbench
 from fastapi.routing import APIRoute
 
 from src.core.openai.codex_auth_workbench import (
@@ -12,9 +13,10 @@ from src.core.openai.codex_auth_workbench import (
     CODEX_AUTH_REPAIRABLE,
     build_codex_auth_zip_entries,
     build_managed_auth_json,
+    resolve_email_service_for_account,
     resolve_codex_auth_status,
 )
-from src.database.models import Account, Base
+from src.database.models import Account, Base, EmailService
 from src.database.session import DatabaseSessionManager
 from src.web.app import create_app
 from src.web.routes import accounts as accounts_routes
@@ -97,6 +99,50 @@ def test_build_managed_auth_json_matches_expected_shape():
     assert auth_json["tokens"]["refresh_token"] == "refresh-token"
     assert auth_json["tokens"]["account_id"] == "acct_789"
     assert "last_refresh" in auth_json
+
+
+def test_resolve_email_service_for_account_prefers_matching_mailbox(monkeypatch):
+    captured = {}
+
+    def fake_create_email_service(service_type, config, name):
+        captured["service_type"] = service_type
+        captured["config"] = dict(config)
+        captured["name"] = name
+        return {"name": name, "config": dict(config)}
+
+    monkeypatch.setattr(workbench, "create_email_service", fake_create_email_service)
+
+    account = Account(
+        id=13,
+        email="target@example.com",
+        password="secret",
+        email_service="outlook",
+        status="active",
+    )
+    rows = [
+        EmailService(
+            id=1,
+            service_type="outlook",
+            name="higher-priority",
+            enabled=True,
+            priority=0,
+            config={"email": "other@example.com"},
+        ),
+        EmailService(
+            id=2,
+            service_type="outlook",
+            name="matching-mailbox",
+            enabled=True,
+            priority=10,
+            config={"email": "target@example.com"},
+        ),
+    ]
+
+    service, error = resolve_email_service_for_account(account, rows)
+
+    assert error == ""
+    assert service["name"] == "matching-mailbox"
+    assert captured["config"]["email"] == "target@example.com"
 
 
 def test_account_to_response_includes_codex_auth_state():

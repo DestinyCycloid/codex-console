@@ -274,7 +274,28 @@ def resolve_email_service_for_account(
     if not enabled_rows:
         return None, f"未找到可用邮箱服务配置: {service_type.value}"
 
-    selected = enabled_rows[0]
+    def _normalize_email(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    def _lookup_candidates(row: EmailService) -> List[str]:
+        config = dict(getattr(row, "config", {}) or {})
+        return [
+            _normalize_email(config.get("email")),
+            _normalize_email(config.get("username")),
+            _normalize_email(config.get("mailbox")),
+            _normalize_email(getattr(row, "name", "")),
+        ]
+
+    selected = None
+    target_email = _normalize_email(getattr(account, "email", ""))
+    if target_email:
+        for row in enabled_rows:
+            if target_email in _lookup_candidates(row):
+                selected = row
+                break
+
+    if selected is None:
+        selected = enabled_rows[0]
     try:
         return create_email_service(service_type, dict(selected.config or {}), selected.name), ""
     except Exception as exc:
