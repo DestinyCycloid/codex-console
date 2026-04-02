@@ -1037,10 +1037,10 @@ function updateBatchButtons() {
     }
 
     elements.batchDeleteBtn.textContent = count > 0 ? `🗑️ 删除 (${count})` : '🗑️ 批量删除';
-    elements.batchRefreshBtn.textContent = count > 0 ? `🔄 刷新 (${count})` : '🔄 刷新Token';
-    elements.batchValidateBtn.textContent = count > 0 ? `✅ 验证 (${count})` : '✅ 验证Token';
+    elements.batchRefreshBtn.textContent = '🔄 刷新Token';
+    elements.batchValidateBtn.textContent = '✅ 验证Token';
     elements.batchUploadBtn.textContent = count > 0 ? `☁️ 上传 (${count})` : '☁️ 上传';
-    elements.batchCheckSubBtn.textContent = count > 0 ? `🔍 检测 (${count})` : '🔍 检测订阅';
+    elements.batchCheckSubBtn.textContent = '🔍 检测订阅';
 
     const pausableCount = getPausableBatchTasks().length;
     const resumableCount = getResumableBatchTasks().length;
