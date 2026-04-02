@@ -1,46 +1,53 @@
-# PR 说明（codex-console2 -> codex-console）
+# PR Description
 
-## 结论摘要
-本次 PR 基于 `K:\github\codex-console2` 对比原仓库 `K:\github\codex-console`，当前实际代码差异为 **1 项**：
-- 删除 GitHub Actions 工作流文件：`.github/workflows/docker-publish.yml`
+## Summary
 
-除上述文件外，其余同名文件内容一致（按全量哈希比对）。
+- add async account-management task routes for token refresh, token validation, subscription checks, and overview refresh
+- add a dedicated Codex Auth workbench with batch audit, repair, generate, and export flows
+- keep the three existing batch action buttons stable in idle state and document their hover help behavior
+- fix local CodeRabbit review findings around domain-slot cleanup, DB rollback/session scope, mailbox binding, and review-doc secret handling
 
-## 修改方案
-### 目标
-- 清理不需要的镜像发布流水线配置，保持当前仓库 CI 行为可控。
+## User-Facing Changes
 
-### 实施内容
-- 移除：`.github/workflows/docker-publish.yml`
+- the accounts page now exposes a separate `Codex Auth` entry button that opens a dedicated workbench modal
+- the accounts table includes a `Codex Auth` state column
+- Codex Auth workbench actions now support:
+  - batch audit
+  - batch repair
+  - batch artifact generation
+  - batch ZIP export
+- async account operations now report task progress through dedicated task endpoints
 
-## 涉及文件
-- 删除文件：`.github/workflows/docker-publish.yml`
+## Verification
 
-## 影响范围
-### 直接影响
-- 仓库将不再触发该文件定义的 Docker 发布工作流。
+```bash
+python3 -m py_compile src/web/routes/accounts.py src/web/routes/payment.py src/core/openai/codex_auth_workbench.py
+node --check static/js/accounts.js
+uv run python -m pytest -q tests/test_codex_auth_workbench.py tests/test_security_and_task_routes.py
+```
 
-### 间接影响
-- 如果团队仍依赖该 workflow 进行镜像发布，发布链路会中断；需改由其它 workflow 或手动流程执行。
+Result:
 
-## 验证结果
-- 已完成目录级全量比对（`K:\github\codex-console2` vs `K:\github\codex-console`）：
-  - 同名文件：108
-  - 同名文件内容差异：0
-  - 新增文件：0
-  - 删除文件：1（即上述 workflow 文件）
+```text
+12 passed in 6.15s
+```
 
-## 回滚方案
-如需回滚本次变更：
-1. 从原仓库 `K:\github\codex-console` 恢复 `.github/workflows/docker-publish.yml`。
-2. 提交回滚 commit 并重新触发 CI 验证。
+## Real Dev Evidence
 
-## 风险评估
-- 风险等级：低（仅 CI 配置变更）
-- 关注点：确认团队当前是否仍需要该 Docker 发布流水线。
+- isolated dev container: `codex-console-codex-auth-dev`
+- dev web URL: `http://127.0.0.1:16668`
+- copied 4 abnormal accounts into `data-dev` only: `53`, `64`, `65`, `71`
+- batch audit result: `1 repairable`, `3 blocked by add-phone`
+- batch repair result: account `53` repaired successfully; `64`, `65`, `71` remained blocked
+- batch export returned a standard managed `auth.json` ZIP containing only the repaired account artifact
 
-## 建议的 PR 标题
-- `chore(ci): remove docker-publish workflow`
+## Local CodeRabbit
 
-## 建议的 Commit Message
-- `chore(ci): remove .github/workflows/docker-publish.yml`
+- first pass produced actionable findings on:
+  - domain-slot cleanup
+  - pause timeout handling
+  - SQLAlchemy rollback/session reuse
+  - mailbox-to-service binding
+  - review doc secret exposure
+- all findings were fixed locally
+- second pass result: `0 comments`
