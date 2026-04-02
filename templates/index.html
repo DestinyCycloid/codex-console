@@ -426,6 +426,7 @@
                                         <label for="outlook-concurrency-count">并发数 (1-50)</label>
                                         <input type="number" id="outlook-concurrency-count" name="outlook_concurrency_count" min="1" max="50" value="3">
                                         <small id="outlook-concurrency-hint" style="color: var(--text-muted); font-size: 0.75rem;">同时最多运行 N 个任务，每隔 interval 秒启动新任务</small>
+                                        <small id="outlook-wait-strategy-hint" style="display: block; color: var(--text-muted); font-size: 0.75rem; margin-top: 6px;"></small>
                                     </div>
                                     <div id="outlook-interval-group">
                                         <div class="form-group">
@@ -481,6 +482,7 @@
                                         <label for="concurrency-count">并发数 (1-50)</label>
                                         <input type="number" id="concurrency-count" name="concurrency_count" min="1" max="50" value="3">
                                         <small id="concurrency-hint" style="color: var(--text-muted); font-size: 0.75rem;">同时最多运行 N 个任务，每隔 interval 秒启动新任务</small>
+                                        <small id="wait-strategy-hint" style="display: block; color: var(--text-muted); font-size: 0.75rem; margin-top: 6px;"></small>
                                     </div>
 
                                     <div id="interval-group">
@@ -835,7 +837,6 @@
     {% include "partials/site_footer.html" %}
 </body>
 </html>
-
 
 
 
