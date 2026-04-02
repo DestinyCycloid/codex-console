@@ -1064,6 +1064,66 @@ body {
     gap: var(--spacing-sm);
 }
 
+.hover-help {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.hover-help-bubble {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    z-index: 120;
+    width: 260px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-50%) translateY(-4px);
+    transition: opacity var(--transition), transform var(--transition), visibility var(--transition);
+    pointer-events: none;
+}
+
+.hover-help-bubble::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    transform: translateX(-50%) rotate(45deg);
+}
+
+.hover-help-bubble strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+
+.hover-help-bubble span {
+    display: block;
+    color: var(--text-secondary);
+}
+
+.hover-help:hover .hover-help-bubble,
+.hover-help:focus-within .hover-help-bubble {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+}
+
 .form-select,
 .form-input {
     padding: 8px 12px;
