@@ -658,24 +658,25 @@ function updateRegistrationWaitStrategyHints() {
     const strategyLabel = registrationWaitStrategy === 'completion' ? '完成间隔' : '启动间隔';
     const normalMode = elements.concurrencyMode?.value || 'pipeline';
     const outlookMode = elements.outlookConcurrencyMode?.value || 'pipeline';
+    const prefix = '<strong>当前全局等待策略：</strong>';
 
     if (elements.waitStrategyHint) {
         if (normalMode === 'parallel') {
-            elements.waitStrategyHint.textContent = `当前全局等待策略：${strategyLabel}。当前并行模式下不会使用间隔等待。`;
+            elements.waitStrategyHint.innerHTML = `${prefix}${strategyLabel}。当前并行模式下不会使用间隔等待。`;
         } else if (registrationWaitStrategy === 'completion') {
-            elements.waitStrategyHint.textContent = '当前全局等待策略：完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。';
+            elements.waitStrategyHint.innerHTML = `${prefix}完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。`;
         } else {
-            elements.waitStrategyHint.textContent = '当前全局等待策略：启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。';
+            elements.waitStrategyHint.innerHTML = `${prefix}启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。`;
         }
     }
 
     if (elements.outlookWaitStrategyHint) {
         if (outlookMode === 'parallel') {
-            elements.outlookWaitStrategyHint.textContent = `当前全局等待策略：${strategyLabel}。当前并行模式下不会使用间隔等待。`;
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}${strategyLabel}。当前并行模式下不会使用间隔等待。`;
         } else if (registrationWaitStrategy === 'completion') {
-            elements.outlookWaitStrategyHint.textContent = '当前全局等待策略：完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。';
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。`;
         } else {
-            elements.outlookWaitStrategyHint.textContent = '当前全局等待策略：启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。';
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。`;
         }
     }
 }
