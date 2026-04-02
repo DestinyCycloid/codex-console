@@ -658,7 +658,7 @@ function updateRegistrationWaitStrategyHints() {
     const strategyLabel = registrationWaitStrategy === 'completion' ? '完成间隔' : '启动间隔';
     const normalMode = elements.concurrencyMode?.value || 'pipeline';
     const outlookMode = elements.outlookConcurrencyMode?.value || 'pipeline';
-    const prefix = '<strong>当前全局等待策略：</strong>';
+    const prefix = '<strong style="color: var(--text-secondary); font-weight: 700;">当前全局等待策略：</strong>';
 
     if (elements.waitStrategyHint) {
         if (normalMode === 'parallel') {
