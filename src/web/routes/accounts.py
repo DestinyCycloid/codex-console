@@ -13,15 +13,29 @@ import zipfile
 import base64
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks, Body
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 
 from ...config.constants import AccountStatus
 from ...config.settings import get_settings
+from ...core.openai.codex_auth_workbench import (
+    CODEX_AUTH_BLOCKED,
+    CODEX_AUTH_HEALTHY,
+    CODEX_AUTH_REPAIRABLE,
+    CodexAuthEngine,
+    build_codex_auth_zip_entries,
+    build_managed_auth_json,
+    persist_codex_auth_generated_artifact,
+    persist_codex_auth_audit,
+    persist_codex_auth_success,
+    resolve_codex_auth_status,
+    resolve_email_service_for_account,
+    update_codex_auth_extra,
+)
 from ...core.openai.overview import fetch_codex_overview, AccountDeactivatedError
 from ...core.openai.token_refresh import refresh_account_token as do_refresh
 from ...core.openai.token_refresh import validate_account_token as do_validate
@@ -33,7 +47,7 @@ from ...core.upload.new_api_upload import batch_upload_to_new_api, upload_to_new
 from ...core.dynamic_proxy import get_proxy_url_for_task
 from ...core.timezone_utils import utcnow_naive
 from ...database import crud
-from ...database.models import Account
+from ...database.models import Account, EmailService
 from ...database.session import get_db
 from ..task_manager import task_manager
 
@@ -120,6 +134,538 @@ def _submit_account_async_task(task_id: str, runner, payload: Dict[str, Any]) ->
             error=str(exc),
         )
         raise HTTPException(status_code=500, detail="任务提交失败") from exc
+
+
+def _codex_auth_task_id(task_type: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(task_type or "").strip().lower()).strip("-") or "task"
+    return f"codex-auth-{normalized}-{uuid.uuid4().hex[:12]}"
+
+
+def _get_codex_auth_task_or_404(task_id: str) -> Dict[str, Any]:
+    snapshot = task_manager.get_domain_task("codex_auth", task_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return snapshot
+
+
+def _wait_codex_auth_task_if_paused(task_id: str) -> bool:
+    while True:
+        snapshot = task_manager.get_domain_task("codex_auth", task_id) or {}
+        if bool(snapshot.get("cancel_requested")):
+            return False
+        if not bool(snapshot.get("pause_requested")):
+            return True
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="paused",
+            paused=True,
+            message="Codex Auth 任务已暂停，等待继续",
+        )
+        time.sleep(_ACCOUNT_TASK_POLL_INTERVAL_SECONDS)
+
+
+def _finalize_codex_auth_async_task(
+    task_id: str,
+    *,
+    status: str,
+    message: str,
+    result: Dict[str, Any],
+    error: Optional[str] = None,
+) -> None:
+    task_manager.update_domain_task(
+        "codex_auth",
+        task_id,
+        status=status,
+        paused=False,
+        pause_requested=False,
+        finished_at=datetime.utcnow().isoformat(),
+        message=message,
+        error=error,
+        result=result,
+    )
+    task_manager.release_domain_slot("codex_auth", task_id)
+
+
+def _submit_codex_auth_async_task(task_id: str, runner, payload: Dict[str, Any]) -> None:
+    try:
+        task_manager.executor.submit(runner, task_id, payload)
+    except Exception as exc:
+        logger.exception("提交 codex_auth 异步任务失败: task_id=%s error=%s", task_id, exc)
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=f"任务提交失败: {exc}",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="任务提交失败") from exc
+
+
+def _resolve_codex_auth_accounts(
+    db,
+    *,
+    ids: List[int],
+    select_all: bool,
+    status_filter: Optional[str],
+    email_service_filter: Optional[str],
+    search_filter: Optional[str],
+) -> List[Account]:
+    resolved_ids = resolve_account_ids(
+        db,
+        ids,
+        select_all,
+        status_filter,
+        email_service_filter,
+        search_filter,
+    )
+    if not resolved_ids:
+        return []
+    return db.query(Account).filter(Account.id.in_(resolved_ids)).order_by(Account.created_at.desc()).all()
+
+
+def _resolve_codex_auth_proxy(account: Account, request_proxy: Optional[str]) -> Optional[str]:
+    if str(request_proxy or "").strip():
+        return _get_proxy(request_proxy)
+    return _get_proxy(str(account.proxy_used or "").strip() or None)
+
+
+def _run_codex_auth_online_probe(
+    db,
+    account: Account,
+    *,
+    request_proxy: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    status = resolve_codex_auth_status(account)
+    if status.complete:
+        persist_codex_auth_audit(account, health=CODEX_AUTH_HEALTHY)
+        db.commit()
+        return (
+            {
+                "id": account.id,
+                "email": account.email,
+                "success": True,
+                "health": CODEX_AUTH_HEALTHY,
+                "label": status.label,
+                "reason": status.reason,
+                "action": "static",
+            },
+            "",
+        )
+
+    if status.health not in {CODEX_AUTH_REPAIRABLE, CODEX_AUTH_BLOCKED}:
+        persist_codex_auth_audit(account, health=status.health, error_message=status.reason, block_reason=status.last_block_reason)
+        db.commit()
+        return (
+            {
+                "id": account.id,
+                "email": account.email,
+                "success": False,
+                "health": status.health,
+                "label": status.label,
+                "reason": status.reason,
+                "action": "static",
+            },
+            "",
+        )
+
+    email_services = db.query(EmailService).filter(EmailService.enabled.is_(True)).all()
+    email_service, error_message = resolve_email_service_for_account(account, email_services)
+    if not email_service:
+        persist_codex_auth_audit(account, health="missing_prerequisites", error_message=error_message)
+        db.commit()
+        return (
+            {
+                "id": account.id,
+                "email": account.email,
+                "success": False,
+                "health": "missing_prerequisites",
+                "label": "缺条件",
+                "reason": error_message,
+                "action": "static",
+            },
+            "",
+        )
+
+    engine = CodexAuthEngine(
+        email=account.email,
+        password=str(account.password or "").strip(),
+        email_service=email_service,
+        email_service_id=str(account.email_service_id or "").strip() or None,
+        proxy_url=_resolve_codex_auth_proxy(account, request_proxy),
+    )
+    probe_result = engine.run()
+    if probe_result.success:
+        persist_codex_auth_audit(account, health=CODEX_AUTH_REPAIRABLE)
+        db.commit()
+        return (
+            {
+                "id": account.id,
+                "email": account.email,
+                "success": True,
+                "health": CODEX_AUTH_REPAIRABLE,
+                "label": "可修复",
+                "reason": "严格 Codex Auth 探测成功",
+                "action": "probe",
+                "workspace_id": probe_result.workspace_id,
+                "account_id": probe_result.account_id,
+            },
+            "",
+        )
+
+    health = probe_result.health or "unknown"
+    persist_codex_auth_audit(
+        account,
+        health=health,
+        error_message=probe_result.error_message,
+        block_reason=probe_result.block_reason,
+    )
+    db.commit()
+    return (
+        {
+            "id": account.id,
+            "email": account.email,
+            "success": False,
+            "health": health,
+            "label": "受阻" if health == CODEX_AUTH_BLOCKED else "未知",
+            "reason": probe_result.block_reason or probe_result.error_message or "严格 Codex Auth 探测失败",
+            "action": "probe",
+        },
+        "",
+    )
+
+
+def _run_batch_codex_auth_audit_async(task_id: str, request_data: Dict[str, Any]) -> None:
+    acquired, running, quota = task_manager.try_acquire_domain_slot("codex_auth", task_id)
+    if not acquired:
+        reason = f"并发配额已满（running={running}, quota={quota}）"
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=reason,
+            error=reason,
+        )
+        return
+
+    request = BatchCodexAuthRequest(**request_data)
+    result = {"success_count": 0, "failed_count": 0, "details": []}
+
+    try:
+        with get_db() as db:
+            accounts = _resolve_codex_auth_accounts(
+                db,
+                ids=request.ids,
+                select_all=request.select_all,
+                status_filter=request.status_filter,
+                email_service_filter=request.email_service_filter,
+                search_filter=request.search_filter,
+            )
+            total = len(accounts)
+            task_manager.update_domain_task(
+                "codex_auth",
+                task_id,
+                status="running",
+                started_at=datetime.utcnow().isoformat(),
+                paused=False,
+                message="Codex Auth 批量审计执行中",
+                progress={"completed": 0, "total": total},
+            )
+
+            for index, account in enumerate(accounts, start=1):
+                if task_manager.is_domain_task_cancel_requested("codex_auth", task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
+                    return
+                if not _wait_codex_auth_task_if_paused(task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 审计已取消", result=result)
+                    return
+
+                task_manager.update_domain_task(
+                    "codex_auth",
+                    task_id,
+                    status="running",
+                    paused=False,
+                    message=f"正在审计第 {index}/{total} 个账号",
+                )
+                detail, _ = _run_codex_auth_online_probe(db, account, request_proxy=request.proxy)
+                detail = detail or {
+                    "id": account.id,
+                    "email": account.email,
+                    "success": False,
+                    "health": "unknown",
+                    "reason": "审计执行失败",
+                }
+                if detail.get("success"):
+                    result["success_count"] += 1
+                else:
+                    result["failed_count"] += 1
+                result["details"].append(detail)
+                task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+                task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="completed",
+            message=f"Codex Auth 审计完成：可继续 {result['success_count']}，失败 {result['failed_count']}",
+            result=result,
+        )
+    except Exception as exc:
+        logger.exception("Codex Auth 审计异步任务失败: task_id=%s error=%s", task_id, exc)
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="failed",
+            message=f"Codex Auth 审计异常: {exc}",
+            error=str(exc),
+            result=result,
+        )
+
+
+def _run_batch_codex_auth_generate_async(task_id: str, request_data: Dict[str, Any]) -> None:
+    acquired, running, quota = task_manager.try_acquire_domain_slot("codex_auth", task_id)
+    if not acquired:
+        reason = f"并发配额已满（running={running}, quota={quota}）"
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=reason,
+            error=reason,
+        )
+        return
+
+    request = BatchCodexAuthRequest(**request_data)
+    result = {"success_count": 0, "failed_count": 0, "details": []}
+
+    try:
+        with get_db() as db:
+            accounts = _resolve_codex_auth_accounts(
+                db,
+                ids=request.ids,
+                select_all=request.select_all,
+                status_filter=request.status_filter,
+                email_service_filter=request.email_service_filter,
+                search_filter=request.search_filter,
+            )
+            total = len(accounts)
+            task_manager.update_domain_task(
+                "codex_auth",
+                task_id,
+                status="running",
+                started_at=datetime.utcnow().isoformat(),
+                paused=False,
+                message="Codex Auth 生成任务执行中",
+                progress={"completed": 0, "total": total},
+            )
+
+            for index, account in enumerate(accounts, start=1):
+                if task_manager.is_domain_task_cancel_requested("codex_auth", task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 生成已取消", result=result)
+                    return
+                if not _wait_codex_auth_task_if_paused(task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 生成已取消", result=result)
+                    return
+
+                detail: Dict[str, Any] = {"id": account.id, "email": account.email, "success": False}
+                try:
+                    auth_json = build_managed_auth_json(account)
+                    artifact_path = persist_codex_auth_generated_artifact(account, auth_json)
+                    db.commit()
+                    detail.update(
+                        {
+                            "success": True,
+                            "health": CODEX_AUTH_HEALTHY,
+                            "reason": "标准 auth.json 已生成",
+                            "artifact_path": str(artifact_path),
+                        }
+                    )
+                    result["success_count"] += 1
+                except Exception as exc:
+                    status = resolve_codex_auth_status(account)
+                    update_codex_auth_extra(
+                        account,
+                        health=status.health,
+                        last_error=str(exc),
+                    )
+                    db.commit()
+                    detail.update(
+                        {
+                            "health": status.health,
+                            "reason": str(exc),
+                        }
+                    )
+                    result["failed_count"] += 1
+
+                result["details"].append(detail)
+                task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+                task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="completed",
+            message=f"Codex Auth 生成完成：成功 {result['success_count']}，失败 {result['failed_count']}",
+            result=result,
+        )
+    except Exception as exc:
+        logger.exception("Codex Auth 生成异步任务失败: task_id=%s error=%s", task_id, exc)
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="failed",
+            message=f"Codex Auth 生成异常: {exc}",
+            error=str(exc),
+            result=result,
+        )
+
+
+def _run_batch_codex_auth_repair_async(task_id: str, request_data: Dict[str, Any]) -> None:
+    acquired, running, quota = task_manager.try_acquire_domain_slot("codex_auth", task_id)
+    if not acquired:
+        reason = f"并发配额已满（running={running}, quota={quota}）"
+        task_manager.update_domain_task(
+            "codex_auth",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=reason,
+            error=reason,
+        )
+        return
+
+    request = BatchCodexAuthRequest(**request_data)
+    result = {"success_count": 0, "failed_count": 0, "details": []}
+
+    try:
+        with get_db() as db:
+            accounts = _resolve_codex_auth_accounts(
+                db,
+                ids=request.ids,
+                select_all=request.select_all,
+                status_filter=request.status_filter,
+                email_service_filter=request.email_service_filter,
+                search_filter=request.search_filter,
+            )
+            email_services = db.query(EmailService).filter(EmailService.enabled.is_(True)).all()
+            total = len(accounts)
+            task_manager.update_domain_task(
+                "codex_auth",
+                task_id,
+                status="running",
+                started_at=datetime.utcnow().isoformat(),
+                paused=False,
+                message="Codex Auth 严格修复执行中",
+                progress={"completed": 0, "total": total},
+            )
+
+            for index, account in enumerate(accounts, start=1):
+                if task_manager.is_domain_task_cancel_requested("codex_auth", task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 修复已取消", result=result)
+                    return
+                if not _wait_codex_auth_task_if_paused(task_id):
+                    _finalize_codex_auth_async_task(task_id, status="cancelled", message="Codex Auth 修复已取消", result=result)
+                    return
+
+                task_manager.update_domain_task(
+                    "codex_auth",
+                    task_id,
+                    status="running",
+                    paused=False,
+                    message=f"正在修复第 {index}/{total} 个账号",
+                )
+
+                detail: Dict[str, Any] = {"id": account.id, "email": account.email, "success": False}
+                status = resolve_codex_auth_status(account)
+                if status.complete:
+                    try:
+                        auth_json = build_managed_auth_json(account)
+                        artifact_path = persist_codex_auth_generated_artifact(account, auth_json)
+                        db.commit()
+                        detail.update(
+                            {
+                                "success": True,
+                                "health": CODEX_AUTH_HEALTHY,
+                                "reason": "账号已完整，已补生成 artifact",
+                                "artifact_path": str(artifact_path),
+                            }
+                        )
+                        result["success_count"] += 1
+                    except Exception as exc:
+                        detail.update({"health": status.health, "reason": str(exc)})
+                        result["failed_count"] += 1
+                    result["details"].append(detail)
+                    task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+                    task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+                    continue
+
+                email_service, service_error = resolve_email_service_for_account(account, email_services)
+                if not email_service:
+                    persist_codex_auth_audit(account, health="missing_prerequisites", error_message=service_error)
+                    db.commit()
+                    detail.update({"health": "missing_prerequisites", "reason": service_error})
+                    result["failed_count"] += 1
+                    result["details"].append(detail)
+                    task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+                    task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+                    continue
+
+                engine = CodexAuthEngine(
+                    email=account.email,
+                    password=str(account.password or "").strip(),
+                    email_service=email_service,
+                    email_service_id=str(account.email_service_id or "").strip() or None,
+                    proxy_url=_resolve_codex_auth_proxy(account, request.proxy),
+                )
+                repair_result = engine.run()
+                if repair_result.success:
+                    artifact_path = persist_codex_auth_success(account, repair_result)
+                    db.commit()
+                    detail.update(
+                        {
+                            "success": True,
+                            "health": CODEX_AUTH_HEALTHY,
+                            "reason": "严格 Codex Auth 修复成功",
+                            "workspace_id": repair_result.workspace_id,
+                            "account_id": repair_result.account_id,
+                            "artifact_path": str(artifact_path),
+                        }
+                    )
+                    result["success_count"] += 1
+                else:
+                    persist_codex_auth_audit(
+                        account,
+                        health=repair_result.health or "unknown",
+                        error_message=repair_result.error_message,
+                        block_reason=repair_result.block_reason,
+                    )
+                    db.commit()
+                    detail.update(
+                        {
+                            "health": repair_result.health or "unknown",
+                            "reason": repair_result.block_reason or repair_result.error_message or "修复失败",
+                        }
+                    )
+                    result["failed_count"] += 1
+
+                result["details"].append(detail)
+                task_manager.append_domain_task_detail("codex_auth", task_id, detail)
+                task_manager.set_domain_task_progress("codex_auth", task_id, completed=index, total=total)
+
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="completed",
+            message=f"Codex Auth 修复完成：成功 {result['success_count']}，失败 {result['failed_count']}",
+            result=result,
+        )
+    except Exception as exc:
+        logger.exception("Codex Auth 修复异步任务失败: task_id=%s error=%s", task_id, exc)
+        _finalize_codex_auth_async_task(
+            task_id,
+            status="failed",
+            message=f"Codex Auth 修复异常: {exc}",
+            error=str(exc),
+            result=result,
+        )
 
 
 def _run_batch_refresh_async(task_id: str, request_data: Dict[str, Any]) -> None:
@@ -599,6 +1145,7 @@ class AccountResponse(BaseModel):
     cookies: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    codex_auth: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -737,6 +1284,7 @@ def resolve_account_ids(
 
 def account_to_response(account: Account) -> AccountResponse:
     """转换 Account 模型为响应模型"""
+    codex_auth = resolve_codex_auth_status(account).to_dict()
     return AccountResponse(
         id=account.id,
         email=account.email,
@@ -758,6 +1306,7 @@ def account_to_response(account: Account) -> AccountResponse:
         cookies=account.cookies,
         created_at=account.created_at.isoformat() if account.created_at else None,
         updated_at=account.updated_at.isoformat() if account.updated_at else None,
+        codex_auth=codex_auth,
     )
 
 
@@ -2002,6 +2551,16 @@ class BatchExportRequest(BaseModel):
     search_filter: Optional[str] = None
 
 
+class BatchCodexAuthRequest(BaseModel):
+    """Codex Auth 批量请求"""
+    ids: List[int] = []
+    select_all: bool = False
+    status_filter: Optional[str] = None
+    email_service_filter: Optional[str] = None
+    search_filter: Optional[str] = None
+    proxy: Optional[str] = None
+
+
 @router.post("/export/json")
 async def export_accounts_json(request: BatchExportRequest):
     """导出账号为 JSON 格式"""
@@ -2606,6 +3165,123 @@ async def validate_account_token(account_id: int, request: Optional[TokenValidat
 @router.get("/tasks/{task_id}")
 def get_account_async_task(task_id: str):
     return _get_account_task_or_404(task_id)
+
+
+@router.post("/codex-auth/audit/async")
+def create_codex_auth_audit_task(request: BatchCodexAuthRequest):
+    payload = request.model_dump()
+    with get_db() as db:
+        accounts = _resolve_codex_auth_accounts(
+            db,
+            ids=request.ids,
+            select_all=request.select_all,
+            status_filter=request.status_filter,
+            email_service_filter=request.email_service_filter,
+            search_filter=request.search_filter,
+        )
+
+    task_id = _codex_auth_task_id("audit")
+    snapshot = task_manager.register_domain_task(
+        domain="codex_auth",
+        task_id=task_id,
+        task_type="codex_auth_audit",
+        payload=payload,
+        progress={"completed": 0, "total": len(accounts)},
+        max_retries=0,
+    )
+    _submit_codex_auth_async_task(task_id, _run_batch_codex_auth_audit_async, payload)
+    return snapshot
+
+
+@router.post("/codex-auth/generate/async")
+def create_codex_auth_generate_task(request: BatchCodexAuthRequest):
+    payload = request.model_dump()
+    with get_db() as db:
+        accounts = _resolve_codex_auth_accounts(
+            db,
+            ids=request.ids,
+            select_all=request.select_all,
+            status_filter=request.status_filter,
+            email_service_filter=request.email_service_filter,
+            search_filter=request.search_filter,
+        )
+
+    task_id = _codex_auth_task_id("generate")
+    snapshot = task_manager.register_domain_task(
+        domain="codex_auth",
+        task_id=task_id,
+        task_type="codex_auth_generate",
+        payload=payload,
+        progress={"completed": 0, "total": len(accounts)},
+        max_retries=0,
+    )
+    _submit_codex_auth_async_task(task_id, _run_batch_codex_auth_generate_async, payload)
+    return snapshot
+
+
+@router.post("/codex-auth/repair/async")
+def create_codex_auth_repair_task(request: BatchCodexAuthRequest):
+    payload = request.model_dump()
+    with get_db() as db:
+        accounts = _resolve_codex_auth_accounts(
+            db,
+            ids=request.ids,
+            select_all=request.select_all,
+            status_filter=request.status_filter,
+            email_service_filter=request.email_service_filter,
+            search_filter=request.search_filter,
+        )
+
+    task_id = _codex_auth_task_id("repair")
+    snapshot = task_manager.register_domain_task(
+        domain="codex_auth",
+        task_id=task_id,
+        task_type="codex_auth_repair",
+        payload=payload,
+        progress={"completed": 0, "total": len(accounts)},
+        max_retries=0,
+    )
+    _submit_codex_auth_async_task(task_id, _run_batch_codex_auth_repair_async, payload)
+    return snapshot
+
+
+@router.get("/codex-auth/tasks/{task_id}")
+def get_codex_auth_async_task(task_id: str):
+    return _get_codex_auth_task_or_404(task_id)
+
+
+@router.post("/codex-auth/export")
+async def export_codex_auth_artifacts(request: BatchCodexAuthRequest):
+    with get_db() as db:
+        accounts = _resolve_codex_auth_accounts(
+            db,
+            ids=request.ids,
+            select_all=request.select_all,
+            status_filter=request.status_filter,
+            email_service_filter=request.email_service_filter,
+            search_filter=request.search_filter,
+        )
+
+        try:
+            entries = build_codex_auth_zip_entries(accounts)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not entries:
+            raise HTTPException(status_code=400, detail="没有可导出的 Codex Auth 账号")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for filename, content in entries:
+                zf.writestr(filename, content)
+
+        zip_buffer.seek(0)
+        filename = f"codex_auth_{timestamp}.zip"
+        return StreamingResponse(
+            iter([zip_buffer.getvalue()]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
 
 
 # ============== CPA 上传相关 ==============

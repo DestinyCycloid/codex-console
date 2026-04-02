@@ -126,6 +126,85 @@
         .subscription-status.team .label { color: var(--primary-color); }
         .subscription-status.free .dot { background: var(--danger-color); }
         .subscription-status.free .label { color: var(--danger-color); }
+        .codex-auth-panel {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: flex-start;
+        }
+        .codex-auth-panel-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-width: 420px;
+        }
+        .codex-auth-panel-copy h3 {
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+        .codex-auth-panel-copy p {
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            line-height: 1.55;
+        }
+        .codex-auth-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            justify-content: flex-end;
+        }
+        .codex-auth-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 58px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-size: 0.72rem;
+            font-weight: 700;
+            line-height: 1.4;
+            letter-spacing: 0.2px;
+        }
+        .codex-auth-badge.healthy {
+            color: #166534;
+            background: rgba(34, 197, 94, 0.12);
+            border-color: rgba(34, 197, 94, 0.25);
+        }
+        .codex-auth-badge.repairable {
+            color: #1d4ed8;
+            background: rgba(59, 130, 246, 0.12);
+            border-color: rgba(59, 130, 246, 0.24);
+        }
+        .codex-auth-badge.blocked {
+            color: #b45309;
+            background: rgba(245, 158, 11, 0.14);
+            border-color: rgba(245, 158, 11, 0.3);
+        }
+        .codex-auth-badge.missing_prerequisites,
+        .codex-auth-badge.unknown {
+            color: var(--text-secondary);
+            background: var(--surface-hover);
+            border-color: var(--border);
+        }
+        .codex-auth-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .codex-auth-modal-summary {
+            display: grid;
+            gap: 10px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+        .codex-auth-modal-summary strong {
+            color: var(--text-primary);
+        }
         .account-label-badge {
             display: inline-flex;
             align-items: center;
@@ -404,6 +483,21 @@
                 </div>
             </div>
 
+            <div class="card toolbar-card">
+                <div class="card-body codex-auth-panel">
+                    <div class="codex-auth-panel-copy">
+                        <h3>Codex Auth 工作台</h3>
+                        <p>独立管理标准 Codex Managed Auth。用于批量审计残缺账号、严格修复、生成标准 auth.json，以及导出给官方 Codex 或 codex-auth 使用。</p>
+                    </div>
+                    <div class="codex-auth-toolbar">
+                        <button class="btn btn-secondary" id="codex-auth-audit-btn" disabled>批量审计</button>
+                        <button class="btn btn-warning" id="codex-auth-repair-btn" disabled>批量修复</button>
+                        <button class="btn btn-info" id="codex-auth-generate-btn" disabled>批量生成</button>
+                        <button class="btn btn-primary" id="codex-auth-export-btn" disabled>批量导出</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- 账号列表 -->
             <div class="card">
                 <div class="card-body" style="padding: 0;">
@@ -418,6 +512,7 @@
                                     <th style="width: 120px;">邮箱服务</th>
                                     <th style="width: 80px;">状态</th>
                                     <th style="width: 80px;">CPA</th>
+                                    <th style="width: 88px;">Codex Auth</th>
                                     <th style="width: 80px;">订阅</th>
                                     <th style="width: 140px;">最后刷新</th>
                                     <th style="width: 220px;">操作</th>
@@ -450,6 +545,28 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <div class="modal" id="codex-auth-modal">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3 id="codex-auth-modal-title">Codex Auth 操作确认</h3>
+                <button class="modal-close" id="close-codex-auth-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="codex-auth-modal-summary">
+                    <div><strong>操作：</strong><span id="codex-auth-modal-action">-</span></div>
+                    <div><strong>作用：</strong><span id="codex-auth-modal-purpose">-</span></div>
+                    <div><strong>处理逻辑：</strong><span id="codex-auth-modal-flow">-</span></div>
+                    <div><strong>目标数量：</strong><span id="codex-auth-modal-count">0</span></div>
+                    <div id="codex-auth-modal-note"></div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end;">
+                <button class="btn btn-secondary" id="cancel-codex-auth-modal-btn">取消</button>
+                <button class="btn btn-primary" id="confirm-codex-auth-modal-btn">确认执行</button>
+            </div>
+        </div>
     </div>
 
     <!-- 详情模态框 -->
@@ -585,5 +702,4 @@
     {% include "partials/site_footer.html" %}
 </body>
 </html>
-
 

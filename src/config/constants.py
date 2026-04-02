@@ -132,6 +132,9 @@ OAUTH_AUTH_URL = "https://auth.openai.com/oauth/authorize"
 OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
 OAUTH_SCOPE = "openid email profile offline_access"
+CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CODEX_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+CODEX_OAUTH_ORIGINATOR = "codex_cli_rs"
 
 # OpenAI API 端点
 OPENAI_API_ENDPOINTS = {

@@ -46,6 +46,7 @@ _batch_locks: Dict[str, threading.Lock] = {}
 # 统一任务中心（跨模块任务状态）
 _DOMAIN_DEFAULT_QUOTAS: Dict[str, int] = {
     "accounts": 6,
+    "codex_auth": 1,
     "payment": 4,
     "auto_team": 3,
     "selfcheck": 2,

@@ -14,6 +14,10 @@ let isBatchValidating = false;
 let isBatchCheckingSubscription = false;
 let isOverviewRefreshing = false;
 let isQuickWorkflowRunning = false;
+let isCodexAuthAuditing = false;
+let isCodexAuthRepairing = false;
+let isCodexAuthGenerating = false;
+let isCodexAuthExporting = false;
 let quickWorkflowStepLabel = '';
 let selectAllPages = false;  // 是否选中了全部页
 let currentFilters = { status: '', email_service: '', role_tag: '', search: '' };  // 当前筛选条件
@@ -30,6 +34,12 @@ const activeBatchTasks = {
     subscription: null,
     overview: null,
 };
+const activeCodexAuthTasks = {
+    audit: null,
+    repair: null,
+    generate: null,
+};
+let pendingCodexAuthAction = null;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,6 +81,20 @@ function getPausableBatchTasks() {
 
 function getResumableBatchTasks() {
     return getRunningBatchTasks().filter((task) => Boolean(task.paused));
+}
+
+function trackCodexAuthTask(key, taskRef = null) {
+    if (!Object.prototype.hasOwnProperty.call(activeCodexAuthTasks, key)) return;
+    activeCodexAuthTasks[key] = taskRef ? normalizeTaskState(taskRef) : null;
+    updateBatchButtons();
+}
+
+function patchCodexAuthTask(key, patch = {}) {
+    if (!Object.prototype.hasOwnProperty.call(activeCodexAuthTasks, key)) return;
+    const current = activeCodexAuthTasks[key];
+    if (!current) return;
+    activeCodexAuthTasks[key] = normalizeTaskState({ ...current, ...(patch || {}) });
+    updateBatchButtons();
 }
 
 async function watchDomainTask(fetchTask, onUpdate, maxWaitMs = 20 * 60 * 1000, options = {}) {
@@ -143,6 +167,23 @@ async function watchPaymentTask(taskId, onUpdate, maxWaitMs = 20 * 60 * 1000) {
         onUpdate,
         maxWaitMs,
         { baseIntervalMs: 1200, maxIntervalMs: 12000 },
+    );
+}
+
+async function watchCodexAuthTask(taskId, onUpdate, maxWaitMs = 30 * 60 * 1000) {
+    return watchDomainTask(
+        () => api.get(`/accounts/codex-auth/tasks/${taskId}`, {
+            requestKey: `codex-auth:task:${taskId}`,
+            cancelPrevious: true,
+            retry: 0,
+            timeoutMs: 30000,
+            silentNetworkError: true,
+            silentTimeoutError: true,
+            priority: 'low',
+        }),
+        onUpdate,
+        maxWaitMs,
+        { baseIntervalMs: 1500, maxIntervalMs: 12000 },
     );
 }
 
@@ -262,6 +303,20 @@ const elements = {
     closeAutoQuickRefreshModalBtn: document.getElementById('close-auto-quick-refresh-modal'),
     cancelAutoQuickRefreshBtn: document.getElementById('cancel-auto-quick-refresh-btn'),
     saveAutoQuickRefreshBtn: document.getElementById('save-auto-quick-refresh-btn'),
+    codexAuthAuditBtn: document.getElementById('codex-auth-audit-btn'),
+    codexAuthRepairBtn: document.getElementById('codex-auth-repair-btn'),
+    codexAuthGenerateBtn: document.getElementById('codex-auth-generate-btn'),
+    codexAuthExportBtn: document.getElementById('codex-auth-export-btn'),
+    codexAuthModal: document.getElementById('codex-auth-modal'),
+    codexAuthModalTitle: document.getElementById('codex-auth-modal-title'),
+    codexAuthModalAction: document.getElementById('codex-auth-modal-action'),
+    codexAuthModalPurpose: document.getElementById('codex-auth-modal-purpose'),
+    codexAuthModalFlow: document.getElementById('codex-auth-modal-flow'),
+    codexAuthModalCount: document.getElementById('codex-auth-modal-count'),
+    codexAuthModalNote: document.getElementById('codex-auth-modal-note'),
+    closeCodexAuthModalBtn: document.getElementById('close-codex-auth-modal'),
+    cancelCodexAuthModalBtn: document.getElementById('cancel-codex-auth-modal-btn'),
+    confirmCodexAuthModalBtn: document.getElementById('confirm-codex-auth-modal-btn'),
 };
 
 // 初始化
@@ -326,6 +381,10 @@ function initEventListeners() {
     elements.batchCheckSubBtn.addEventListener('click', handleBatchCheckSubscription);
     elements.batchPauseBtn?.addEventListener('click', pauseActiveBatchTasks);
     elements.batchResumeBtn?.addEventListener('click', resumeActiveBatchTasks);
+    elements.codexAuthAuditBtn?.addEventListener('click', () => openCodexAuthModal('audit'));
+    elements.codexAuthRepairBtn?.addEventListener('click', () => openCodexAuthModal('repair'));
+    elements.codexAuthGenerateBtn?.addEventListener('click', () => openCodexAuthModal('generate'));
+    elements.codexAuthExportBtn?.addEventListener('click', () => openCodexAuthModal('export'));
 
     // 上传下拉菜单
     const uploadMenu = document.getElementById('upload-menu');
@@ -418,6 +477,14 @@ function initEventListeners() {
     elements.autoQuickRefreshModal?.addEventListener('click', (e) => {
         if (e.target === elements.autoQuickRefreshModal) {
             closeAutoQuickRefreshModal();
+        }
+    });
+    elements.closeCodexAuthModalBtn?.addEventListener('click', closeCodexAuthModal);
+    elements.cancelCodexAuthModalBtn?.addEventListener('click', closeCodexAuthModal);
+    elements.confirmCodexAuthModalBtn?.addEventListener('click', executePendingCodexAuthAction);
+    elements.codexAuthModal?.addEventListener('click', (e) => {
+        if (e.target === elements.codexAuthModal) {
+            closeCodexAuthModal();
         }
     });
 
@@ -634,7 +701,7 @@ async function loadAccounts() {
     // 显示加载状态
     elements.table.innerHTML = `
         <tr>
-            <td colspan="9">
+            <td colspan="11">
                 <div class="empty-state">
                     <div class="skeleton skeleton-text" style="width: 60%;"></div>
                     <div class="skeleton skeleton-text" style="width: 80%;"></div>
@@ -675,7 +742,7 @@ async function loadAccounts() {
         console.error('加载账号列表失败:', error);
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="11">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -695,7 +762,7 @@ function renderAccounts(accounts) {
     if (accounts.length === 0) {
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="11">
                     <div class="empty-state">
                         <div class="empty-state-icon">📭</div>
                         <div class="empty-state-title">暂无数据</div>
@@ -738,6 +805,7 @@ function renderAccounts(accounts) {
                         : ``}
                 </div>
             </td>
+            <td>${renderCodexAuthState(account.codex_auth)}</td>
             <td>
                 ${renderSubscriptionStatus(account.subscription_type)}
             </td>
@@ -843,6 +911,18 @@ function renderSubscriptionStatus(subscriptionType) {
         <div class="subscription-status ${variant}" title="${escapeHtml(title)}">
             <span class="dot"></span>
             <span class="label">${escapeHtml(label)}</span>
+        </div>
+    `;
+}
+
+function renderCodexAuthState(codexAuth) {
+    const health = String(codexAuth?.health || 'unknown').trim().toLowerCase() || 'unknown';
+    const label = String(codexAuth?.label || '未知').trim() || '未知';
+    const reason = String(codexAuth?.reason || '').trim();
+    const title = reason || label;
+    return `
+        <div class="codex-auth-state" title="${escapeHtml(title)}">
+            <span class="codex-auth-badge ${escapeHtml(health)}">${escapeHtml(label)}</span>
         </div>
     `;
 }
@@ -1021,6 +1101,210 @@ async function resumeActiveBatchTasks() {
     }
 }
 
+function closeCodexAuthModal() {
+    pendingCodexAuthAction = null;
+    elements.codexAuthModal?.classList.remove('active');
+}
+
+function openCodexAuthModal(action) {
+    const count = getEffectiveCount();
+    if (count === 0) {
+        toast.warning('请先选择要处理的账号');
+        return;
+    }
+
+    const definitions = {
+        audit: {
+            title: 'Codex Auth 批量审计',
+            action: '批量审计',
+            purpose: '用严格 Codex Auth 链路判断账号当前是否可修、是否被 add-phone 门控拦截。',
+            flow: '逐个账号执行严格登录探测；健康账号直接跳过，残缺账号会尝试 OTP、workspace、callback，但不会写回新 token。',
+            note: '审计不会修复账号，只会更新 Codex Auth 状态。',
+            confirmText: '开始审计',
+        },
+        repair: {
+            title: 'Codex Auth 批量修复',
+            action: '批量修复',
+            purpose: '对残缺账号执行严格 Codex Auth 登录，成功后补齐 refresh_token、id_token 并生成标准 auth.json。',
+            flow: '任务按独立 codex_auth 队列低并发执行；每个账号必须走完整 OTP、workspace、callback，缺任一关键 token 都判失败。',
+            note: '修复使用严格失败语义，不接受 session-only 成功。',
+            confirmText: '开始修复',
+        },
+        generate: {
+            title: 'Codex Auth 批量生成',
+            action: '批量生成',
+            purpose: '为已有完整 Managed Auth 账号生成标准 auth.json artifact。',
+            flow: '只处理 refresh_token、id_token、account_id 完整的账号；缺字段账号会直接失败，不会触发登录。',
+            note: '生成成功后可直接导出给官方 Codex 或 codex-auth 使用。',
+            confirmText: '开始生成',
+        },
+        export: {
+            title: 'Codex Auth 批量导出',
+            action: '批量导出',
+            purpose: '导出标准 auth.json ZIP 包。',
+            flow: '按当前勾选或筛选结果打包标准 auth.json；缺少关键 token 的账号不会被导出。',
+            note: '导出使用标准 managed auth.json 结构。',
+            confirmText: '开始导出',
+        },
+    };
+    const def = definitions[action];
+    if (!def) return;
+
+    pendingCodexAuthAction = action;
+    elements.codexAuthModalTitle.textContent = def.title;
+    elements.codexAuthModalAction.textContent = def.action;
+    elements.codexAuthModalPurpose.textContent = def.purpose;
+    elements.codexAuthModalFlow.textContent = def.flow;
+    elements.codexAuthModalCount.textContent = String(count);
+    elements.codexAuthModalNote.textContent = def.note;
+    elements.confirmCodexAuthModalBtn.textContent = def.confirmText;
+    elements.codexAuthModal.classList.add('active');
+}
+
+async function executePendingCodexAuthAction() {
+    const action = pendingCodexAuthAction;
+    if (!action) return;
+
+    const originalText = elements.confirmCodexAuthModalBtn.textContent;
+    elements.confirmCodexAuthModalBtn.disabled = true;
+    elements.confirmCodexAuthModalBtn.textContent = '执行中...';
+    try {
+        if (action === 'audit') {
+            await runCodexAuthAsyncTask('audit', '/accounts/codex-auth/audit/async');
+        } else if (action === 'repair') {
+            await runCodexAuthAsyncTask('repair', '/accounts/codex-auth/repair/async');
+        } else if (action === 'generate') {
+            await runCodexAuthAsyncTask('generate', '/accounts/codex-auth/generate/async');
+        } else if (action === 'export') {
+            await exportCodexAuthArtifacts();
+        }
+        closeCodexAuthModal();
+    } catch (error) {
+        toast.error(`Codex Auth 操作失败: ${error.message}`);
+    } finally {
+        elements.confirmCodexAuthModalBtn.disabled = false;
+        elements.confirmCodexAuthModalBtn.textContent = originalText;
+    }
+}
+
+async function runCodexAuthAsyncTask(key, endpoint) {
+    const payload = buildBatchPayload();
+    const count = getEffectiveCount();
+    const stateMap = {
+        audit: ['isCodexAuthAuditing', 'codexAuthAuditBtn', '批量审计'],
+        repair: ['isCodexAuthRepairing', 'codexAuthRepairBtn', '批量修复'],
+        generate: ['isCodexAuthGenerating', 'codexAuthGenerateBtn', '批量生成'],
+    };
+    const state = stateMap[key];
+    if (!state) return;
+
+    if (key === 'audit') isCodexAuthAuditing = true;
+    if (key === 'repair') isCodexAuthRepairing = true;
+    if (key === 'generate') isCodexAuthGenerating = true;
+    updateBatchButtons();
+
+    try {
+        const task = await api.post(endpoint, payload, {
+            timeoutMs: 20000,
+            retry: 0,
+            cancelPrevious: true,
+            requestKey: `codex-auth:${key}`,
+        });
+        const taskId = task?.id;
+        if (!taskId) {
+            throw new Error('任务创建失败：未返回任务 ID');
+        }
+        trackCodexAuthTask(key, {
+            id: taskId,
+            domain: 'codex_auth',
+            status: task?.status || 'pending',
+            paused: Boolean(task?.paused),
+        });
+        toast.info(`${state[2]}任务已启动（${taskId.slice(0, 8)}）`);
+
+        const button = elements[state[1]];
+        const finalTask = await watchCodexAuthTask(taskId, (progressTask) => {
+            patchCodexAuthTask(key, {
+                status: progressTask?.status || 'running',
+                paused: Boolean(progressTask?.paused),
+            });
+            const progress = progressTask?.progress || {};
+            const completed = Number(progress.completed || 0);
+            const total = Number(progress.total || count);
+            if (button) {
+                button.textContent = `${state[2]} ${completed}/${total}`;
+            }
+        });
+        patchCodexAuthTask(key, {
+            status: finalTask?.status || 'completed',
+            paused: false,
+        });
+
+        const status = String(finalTask?.status || '').toLowerCase();
+        const result = finalTask?.result || {};
+        if (status === 'completed') {
+            toast.success(`${state[2]}完成：成功 ${result.success_count || 0}，失败 ${result.failed_count || 0}`);
+        } else if (status === 'cancelled') {
+            toast.warning(`${state[2]}已取消`);
+        } else {
+            toast.error(`${state[2]}失败: ${finalTask?.error || finalTask?.message || '未知错误'}`);
+        }
+        await refreshAccountsView({ settleDelayMs: 80 });
+    } finally {
+        if (key === 'audit') isCodexAuthAuditing = false;
+        if (key === 'repair') isCodexAuthRepairing = false;
+        if (key === 'generate') isCodexAuthGenerating = false;
+        trackCodexAuthTask(key, null);
+        updateBatchButtons();
+    }
+}
+
+async function exportCodexAuthArtifacts() {
+    const count = getEffectiveCount();
+    const payload = buildBatchPayload();
+    isCodexAuthExporting = true;
+    updateBatchButtons();
+    try {
+        toast.info(`正在导出 ${count} 个账号的 Codex Auth...`);
+        const response = await fetch('/api/accounts/codex-auth/export', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${utils.getStorage('access_token') || localStorage.getItem('access_token') || ''}`,
+            },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            let detail = `HTTP ${response.status}`;
+            try {
+                const json = await response.json();
+                detail = json?.detail || detail;
+            } catch (error) {
+                // ignore
+            }
+            throw new Error(detail);
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename=([^;]+)/i);
+        const filename = match ? match[1].replace(/"/g, '').trim() : `codex_auth_${Date.now()}.zip`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        toast.success('Codex Auth 导出成功');
+    } catch (error) {
+        toast.error('Codex Auth 导出失败: ' + error.message);
+    } finally {
+        isCodexAuthExporting = false;
+        updateBatchButtons();
+    }
+}
+
 // 更新批量操作按钮
 function updateBatchButtons() {
     const count = getEffectiveCount();
@@ -1031,6 +1315,22 @@ function updateBatchButtons() {
     elements.batchUploadBtn.disabled = baseDisabled;
     elements.batchCheckSubBtn.disabled = baseDisabled || isBatchCheckingSubscription;
     elements.exportBtn.disabled = count === 0;
+    if (elements.codexAuthAuditBtn) {
+        elements.codexAuthAuditBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
+        elements.codexAuthAuditBtn.textContent = isCodexAuthAuditing ? '审计中...' : '批量审计';
+    }
+    if (elements.codexAuthRepairBtn) {
+        elements.codexAuthRepairBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
+        elements.codexAuthRepairBtn.textContent = isCodexAuthRepairing ? '修复中...' : '批量修复';
+    }
+    if (elements.codexAuthGenerateBtn) {
+        elements.codexAuthGenerateBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
+        elements.codexAuthGenerateBtn.textContent = isCodexAuthGenerating ? '生成中...' : '批量生成';
+    }
+    if (elements.codexAuthExportBtn) {
+        elements.codexAuthExportBtn.disabled = count === 0 || isCodexAuthAuditing || isCodexAuthRepairing || isCodexAuthGenerating || isCodexAuthExporting;
+        elements.codexAuthExportBtn.textContent = isCodexAuthExporting ? '导出中...' : '批量导出';
+    }
     if (elements.quickRefreshBtn) {
         elements.quickRefreshBtn.disabled = true;
         elements.quickRefreshBtn.textContent = '⚡ 一键刷新(已禁用)';
