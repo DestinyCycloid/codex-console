@@ -1,0 +1,21 @@
+services:
+  webui:
+    build: .
+    shm_size: "1gb"
+    ports:
+      - "16666:1455"
+      - "6081:6080"
+    environment:
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=1455
+      - DISPLAY=:99
+      - ENABLE_VNC=1
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - DEBUG=0
+      - LOG_LEVEL=info
+      - WEBUI_ACCESS_PASSWORD=admin123
+    volumes:
+      - ./data-dev:/app/data
+      - ./logs-dev:/app/logs
+    restart: unless-stopped

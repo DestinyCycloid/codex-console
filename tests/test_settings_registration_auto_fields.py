@@ -13,6 +13,7 @@ class DummySettings:
     registration_default_password_length = 12
     registration_sleep_min = 5
     registration_sleep_max = 30
+    registration_wait_strategy = "completion"
     registration_entry_flow = "abcard"
     registration_auto_enabled = True
     registration_auto_check_interval = 90
@@ -33,6 +34,7 @@ def test_get_registration_settings_includes_auto_fields(monkeypatch):
     result = asyncio.run(settings_routes.get_registration_settings())
 
     assert result["entry_flow"] == "abcard"
+    assert result["wait_strategy"] == "completion"
     assert result["auto_enabled"] is True
     assert result["auto_check_interval"] == 90
     assert result["auto_min_ready_auth_files"] == 3
@@ -99,6 +101,7 @@ def test_update_registration_settings_persists_auto_fields(monkeypatch):
         default_password_length=16,
         sleep_min=7,
         sleep_max=15,
+        wait_strategy="completion",
         entry_flow="abcard",
         auto_enabled=True,
         auto_check_interval=120,
@@ -119,6 +122,7 @@ def test_update_registration_settings_persists_auto_fields(monkeypatch):
     assert len(update_calls) == 1
     payload = update_calls[0]
     assert payload["registration_entry_flow"] == "abcard"
+    assert payload["registration_wait_strategy"] == "completion"
     assert payload["registration_auto_enabled"] is True
     assert payload["registration_auto_check_interval"] == 120
     assert payload["registration_auto_min_ready_auth_files"] == 5
@@ -147,3 +151,18 @@ def test_update_registration_settings_rejects_missing_cpa_when_enabled():
         assert "必须选择一个 CPA 服务" in exc.detail
     else:
         raise AssertionError("expected HTTPException for missing CPA service")
+
+
+def test_update_registration_settings_rejects_invalid_wait_strategy():
+    request = settings_routes.RegistrationSettings(
+        auto_enabled=False,
+        wait_strategy="invalid",
+    )
+
+    try:
+        asyncio.run(settings_routes.update_registration_settings(request))
+    except settings_routes.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "等待策略" in exc.detail
+    else:
+        raise AssertionError("expected HTTPException for invalid wait strategy")

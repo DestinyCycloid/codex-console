@@ -133,6 +133,11 @@ function initEventListeners() {
     if (elements.registrationForm) {
         elements.registrationForm.addEventListener('submit', handleSaveRegistration);
     }
+    const registrationWaitStrategyEl = document.getElementById('registration-wait-strategy');
+    if (registrationWaitStrategyEl) {
+        registrationWaitStrategyEl.addEventListener('change', updateRegistrationWaitStrategyHint);
+        updateRegistrationWaitStrategyHint();
+    }
 
     // 备份数据库
     if (elements.backupBtn) {
@@ -397,6 +402,8 @@ async function loadSettings() {
         const entryFlowRaw = String(data.registration?.entry_flow || 'native').toLowerCase();
         const entryFlow = entryFlowRaw === 'abcard' ? 'abcard' : 'native';
         document.getElementById('registration-entry-flow').value = entryFlow;
+        document.getElementById('registration-wait-strategy').value = data.registration?.wait_strategy || 'start';
+        updateRegistrationWaitStrategyHint();
         document.getElementById('sleep-min').value = data.registration?.sleep_min || 5;
         document.getElementById('sleep-max').value = data.registration?.sleep_max || 30;
 
@@ -429,6 +436,19 @@ async function loadSettings() {
         console.error('加载设置失败:', error);
         toast.error('加载设置失败');
     }
+}
+
+function updateRegistrationWaitStrategyHint() {
+    const selectEl = document.getElementById('registration-wait-strategy');
+    const statusEl = document.getElementById('registration-wait-strategy-status');
+    if (!selectEl || !statusEl) return;
+
+    if (selectEl.value === 'completion') {
+        statusEl.textContent = '当前模式：完成间隔。每个任务完成后，会等待随机秒数，再启动后续任务。';
+        return;
+    }
+
+    statusEl.textContent = '当前模式：启动间隔。每次启动新任务前，会等待随机秒数；如果前一任务本身更慢，后续任务可能在完成后立即接上。';
 }
 
 // 保存系统设置（端口 + 访问控制）
@@ -554,6 +574,7 @@ async function handleSaveRegistration(e) {
         timeout: parseInt(document.getElementById('timeout').value),
         default_password_length: parseInt(document.getElementById('password-length').value),
         entry_flow: document.getElementById('registration-entry-flow').value || 'native',
+        wait_strategy: document.getElementById('registration-wait-strategy').value || 'start',
         sleep_min: parseInt(document.getElementById('sleep-min').value),
         sleep_max: parseInt(document.getElementById('sleep-max').value),
     };

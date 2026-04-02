@@ -308,6 +308,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.REGISTRATION,
         description="注册间隔最大值（秒）"
     ),
+    "registration_wait_strategy": SettingDefinition(
+        db_key="registration.wait_strategy",
+        default_value="start",
+        category=SettingCategory.REGISTRATION,
+        description="批量注册等待策略（start=启动间隔, completion=完成间隔）"
+    ),
     "registration_entry_flow": SettingDefinition(
         db_key="registration.entry_flow",
         default_value="native",
@@ -585,6 +591,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_default_password_length": int,
     "registration_sleep_min": int,
     "registration_sleep_max": int,
+    "registration_wait_strategy": str,
     "registration_entry_flow": str,
     "registration_auto_enabled": bool,
     "registration_auto_check_interval": int,
@@ -874,6 +881,7 @@ class Settings(BaseModel):
     registration_default_password_length: int = 12
     registration_sleep_min: int = 5
     registration_sleep_max: int = 30
+    registration_wait_strategy: str = "start"
     registration_entry_flow: str = "native"
     registration_auto_enabled: bool = False
     registration_auto_check_interval: int = 60
