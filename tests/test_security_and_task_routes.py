@@ -28,6 +28,13 @@ def test_api_accounts_route_has_auth_dependency():
     assert require_api_auth in dependency_calls
 
 
+def test_api_codex_auth_route_has_auth_dependency():
+    app = create_app()
+    route = _find_route(app, "/api/accounts/codex-auth/export", "POST")
+    dependency_calls = [dep.call for dep in route.dependant.dependencies]
+    assert require_api_auth in dependency_calls
+
+
 def test_unified_tasks_router_exposes_summary_and_cancel():
     paths = {route.path for route in tasks_routes.router.routes if hasattr(route, "path")}
     assert "/summary" in paths

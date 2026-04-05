@@ -181,11 +181,27 @@
 
 - Web UI 管理注册任务、账号、支付、自检、邮箱服务、卡池、Auto Team 和日志数据
 - 支持单任务、批量任务、自动补货、计划任务、任务暂停 / 继续 / 取消 / 重试
+- 账号管理页支持异步批量刷新 Token、批量验证、批量检测订阅、账号总览刷新和任务状态轮询
+- 账号管理页提供独立的 `Codex Auth` 工作台，可对残缺账号执行审计、严格修复、标准 `auth.json` 生成和 ZIP 导出
 - 支持多种邮箱服务接码和自部署邮箱接入
 - 支持 CPA、Sub2API、Team Manager、New-API 等上传链路
 - 支持 SQLite 和远程 PostgreSQL
 - 支持打包为 Windows / Linux / macOS 可执行文件
 - 更适配当前 OpenAI 注册与登录链路
+
+## 账号管理页补充说明
+
+当前 `账号管理` 页除了基础账号表，还包含几组已经落地的运维能力：
+
+- `刷新Token`、`验证Token`、`检测订阅`、`总览刷新` 均已改为异步任务模式，支持进度、暂停、继续、取消和结果轮询。
+- 三个批量动作按钮使用悬浮说明气泡，按钮空闲文案保持稳定，不再随勾选数量来回变更。
+- 账号表新增 `Codex Auth` 状态列，可直接看到 `健康`、`可修复`、`受阻`、`缺条件` 等状态。
+- 工具栏中的 `Codex Auth` 会打开独立工作台，而不是把修复动作和日常账号运维按钮混在一起。
+- 工作台内支持四个动作：
+  - `批量审计`：严格探测账号是否还能走完整 Codex Auth 链路。
+  - `批量修复`：只在拿到完整 token bundle 后才判定修复成功。
+  - `批量生成`：为已完整账号生成标准 managed `auth.json`。
+  - `批量导出`：导出兼容官方 Codex 和 `codex-auth` 的 ZIP。
 
 ## 环境要求
 
@@ -195,12 +211,17 @@
 ## 安装依赖
 
 ```bash
-# 使用 uv（推荐）
-uv sync
-
-# 或使用 pip
+# 运行环境建议直接安装 requirements.txt
 pip install -r requirements.txt
+
+# 使用 uv 做本地开发 / 测试
+uv sync --extra dev
 ```
+
+说明：
+
+- `requirements.txt` 目前覆盖运行所需完整依赖，适合直接启动服务。
+- `uv sync --extra dev` 适合本地维护、测试和补充开发依赖。
 
 ## 环境变量配置
 
@@ -257,6 +278,19 @@ codex-console.exe --access-password mypassword
 启动后访问：
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
+
+## 最小验证命令
+
+```bash
+# Python 路由与核心模块语法检查
+python3 -m py_compile src/web/routes/accounts.py src/web/routes/payment.py src/core/openai/codex_auth_workbench.py
+
+# 前端脚本语法检查
+node --check static/js/accounts.js
+
+# 账号管理与 Codex Auth 相关测试
+uv run python -m pytest -q tests/test_codex_auth_workbench.py tests/test_security_and_task_routes.py
+```
 
 ## Docker 部署
 

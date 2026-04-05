@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 import time
 from urllib.parse import urlparse, urlunparse
@@ -36,6 +36,7 @@ from ...core.openai.browser_bind import auto_bind_checkout_with_playwright
 from ...core.openai.random_billing import generate_random_billing_profile
 from ...core.openai.token_refresh import TokenRefreshManager
 from ...core.dynamic_proxy import get_proxy_url_for_task
+from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,6 +65,78 @@ REGION_BLOCK_ERROR_KEYWORDS = (
     "country, region, or territory not supported",
     "request_forbidden",
 )
+_PAYMENT_TASK_POLL_INTERVAL_SECONDS = 0.25
+_PAYMENT_TASK_PAUSE_MAX_WAIT_SECONDS = 3600.0
+
+
+def _payment_task_id(task_type: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", str(task_type or "").strip().lower()).strip("-") or "task"
+    return f"payment-{normalized}-{uuid.uuid4().hex[:12]}"
+
+
+def _get_payment_task_or_404(task_id: str) -> Dict[str, Any]:
+    snapshot = task_manager.get_domain_task("payment", task_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return snapshot
+
+
+def _wait_payment_task_if_paused(task_id: str) -> Tuple[bool, Optional[str]]:
+    pause_started_at = time.monotonic()
+    while True:
+        snapshot = task_manager.get_domain_task("payment", task_id) or {}
+        if bool(snapshot.get("cancel_requested")):
+            return False, "cancelled"
+        if not bool(snapshot.get("pause_requested")):
+            return True, None
+        if time.monotonic() - pause_started_at >= _PAYMENT_TASK_PAUSE_MAX_WAIT_SECONDS:
+            return False, "timeout"
+        task_manager.update_domain_task(
+            "payment",
+            task_id,
+            status="paused",
+            paused=True,
+            message="任务已暂停，等待继续",
+        )
+        time.sleep(_PAYMENT_TASK_POLL_INTERVAL_SECONDS)
+
+
+def _finalize_payment_async_task(
+    task_id: str,
+    *,
+    status: str,
+    message: str,
+    result: Dict[str, Any],
+    error: Optional[str] = None,
+) -> None:
+    task_manager.update_domain_task(
+        "payment",
+        task_id,
+        status=status,
+        paused=False,
+        pause_requested=False,
+        finished_at=datetime.utcnow().isoformat(),
+        message=message,
+        error=error,
+        result=result,
+    )
+    task_manager.release_domain_slot("payment", task_id)
+
+
+def _submit_payment_async_task(task_id: str, runner, payload: Dict[str, Any]) -> None:
+    try:
+        task_manager.executor.submit(runner, task_id, payload)
+    except Exception as exc:
+        logger.exception("提交 payment 异步任务失败: task_id=%s error=%s", task_id, exc)
+        task_manager.update_domain_task(
+            "payment",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=f"任务提交失败: {exc}",
+            error=str(exc),
+        )
+        raise HTTPException(status_code=500, detail="任务提交失败") from exc
 
 
 def _is_retryable_subscription_check_error(error_message: Optional[str]) -> bool:
@@ -3261,6 +3334,188 @@ def delete_bind_card_task(task_id: int):
 
 # ============== 订阅状态 ==============
 
+
+def _run_batch_check_subscription_async(task_id: str, request_data: Dict[str, Any]) -> None:
+    acquired, running, quota = task_manager.try_acquire_domain_slot("payment", task_id)
+    if not acquired:
+        reason = f"并发配额已满（running={running}, quota={quota}）"
+        task_manager.update_domain_task(
+            "payment",
+            task_id,
+            status="failed",
+            finished_at=datetime.utcnow().isoformat(),
+            message=reason,
+            error=reason,
+        )
+        return
+
+    result = {"success_count": 0, "failed_count": 0, "details": []}
+
+    try:
+        request = BatchCheckSubscriptionRequest(**request_data)
+        explicit_proxy = _normalize_proxy_value(request.proxy)
+        with get_db() as db:
+            ids = resolve_account_ids(
+                db, request.ids, request.select_all,
+                request.status_filter, request.email_service_filter, request.search_filter
+            )
+
+        total = len(ids)
+        task_manager.update_domain_task(
+            "payment",
+            task_id,
+            status="running",
+            started_at=datetime.utcnow().isoformat(),
+            paused=False,
+            message="批量检测订阅执行中",
+            progress={"completed": 0, "total": total},
+        )
+
+        with get_db() as db:
+            for index, account_id in enumerate(ids, start=1):
+                if task_manager.is_domain_task_cancel_requested("payment", task_id):
+                    _finalize_payment_async_task(
+                        task_id,
+                        status="cancelled",
+                        message="批量检测订阅已取消",
+                        result=result,
+                    )
+                    return
+                should_continue, pause_exit_reason = _wait_payment_task_if_paused(task_id)
+                if not should_continue:
+                    if pause_exit_reason == "timeout":
+                        _finalize_payment_async_task(
+                            task_id,
+                            status="failed",
+                            message="批量检测订阅暂停超时，任务已终止",
+                            result=result,
+                            error="任务暂停超时",
+                        )
+                        return
+                    _finalize_payment_async_task(
+                        task_id,
+                        status="cancelled",
+                        message="批量检测订阅已取消",
+                        result=result,
+                    )
+                    return
+
+                task_manager.update_domain_task(
+                    "payment",
+                    task_id,
+                    status="running",
+                    paused=False,
+                    message=f"正在检测第 {index}/{total} 个账号的订阅",
+                )
+
+                account = db.query(Account).filter(Account.id == account_id).first()
+                detail: Dict[str, Any] = {"id": account_id, "email": None, "success": False}
+                if not account:
+                    result["failed_count"] += 1
+                    detail["error"] = "账号不存在"
+                else:
+                    detail["email"] = account.email
+                    try:
+                        runtime_proxy = _resolve_runtime_proxy(explicit_proxy, account)
+                        subscription_detail, refreshed = _check_subscription_detail_with_retry(
+                            db=db,
+                            account=account,
+                            proxy=runtime_proxy,
+                            allow_token_refresh=True,
+                        )
+                        status = str(subscription_detail.get("status") or "free").lower()
+                        confidence = str(subscription_detail.get("confidence") or "low").lower()
+
+                        if status in ("plus", "team"):
+                            account.subscription_type = status
+                            account.subscription_at = utcnow_naive()
+                        elif status == "free" and confidence == "high":
+                            account.subscription_type = None
+                            account.subscription_at = None
+
+                        db.commit()
+                        result["success_count"] += 1
+                        detail.update(
+                            {
+                                "success": True,
+                                "subscription_type": status,
+                                "confidence": confidence,
+                                "source": subscription_detail.get("source"),
+                                "token_refreshed": refreshed,
+                            }
+                        )
+                    except Exception as exc:
+                        db.rollback()
+                        result["failed_count"] += 1
+                        detail["error"] = str(exc)
+
+                result["details"].append(detail)
+                task_manager.append_domain_task_detail("payment", task_id, detail)
+                task_manager.set_domain_task_progress("payment", task_id, completed=index, total=total)
+
+        _finalize_payment_async_task(
+            task_id,
+            status="completed",
+            message=f"批量检测订阅完成：成功 {result['success_count']}，失败 {result['failed_count']}",
+            result=result,
+        )
+    except Exception as exc:
+        logger.exception("批量检测订阅异步任务失败: task_id=%s error=%s", task_id, exc)
+        _finalize_payment_async_task(
+            task_id,
+            status="failed",
+            message=f"批量检测订阅异常: {exc}",
+            result=result,
+            error=str(exc),
+        )
+
+
+def get_payment_op_task(task_id: str) -> Dict[str, Any]:
+    return _get_payment_task_or_404(task_id)
+
+
+def cancel_payment_op_task(task_id: str) -> Dict[str, Any]:
+    _get_payment_task_or_404(task_id)
+    snapshot = task_manager.request_domain_task_cancel("payment", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "cancelling",
+        "task": snapshot,
+    }
+
+
+def pause_payment_op_task(task_id: str) -> Dict[str, Any]:
+    _get_payment_task_or_404(task_id)
+    snapshot = task_manager.request_domain_task_pause("payment", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "paused",
+        "task": snapshot,
+    }
+
+
+def resume_payment_op_task(task_id: str) -> Dict[str, Any]:
+    _get_payment_task_or_404(task_id)
+    snapshot = task_manager.request_domain_task_resume("payment", task_id)
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": "running",
+        "task": snapshot,
+    }
+
+
+def retry_payment_op_task(task_id: str) -> Dict[str, Any]:
+    snapshot = _get_payment_task_or_404(task_id)
+    payload = dict(snapshot.get("payload") or {})
+    task_type = str(snapshot.get("task_type") or "").strip().lower()
+    if task_type == "batch_check_subscription":
+        return create_batch_check_subscription_async_task(BatchCheckSubscriptionRequest(**payload))
+    raise HTTPException(status_code=400, detail="当前任务类型不支持重试")
+
+
 @router.post("/accounts/batch-check-subscription")
 def batch_check_subscription(request: BatchCheckSubscriptionRequest):
     """批量检测账号订阅状态"""
@@ -3320,6 +3575,33 @@ def batch_check_subscription(request: BatchCheckSubscriptionRequest):
                 )
 
     return results
+
+
+@router.post("/accounts/batch-check-subscription/async")
+def create_batch_check_subscription_async_task(request: BatchCheckSubscriptionRequest):
+    payload = request.model_dump()
+    with get_db() as db:
+        ids = resolve_account_ids(
+            db, request.ids, request.select_all,
+            request.status_filter, request.email_service_filter, request.search_filter
+        )
+
+    task_id = _payment_task_id("batch-check-subscription")
+    snapshot = task_manager.register_domain_task(
+        domain="payment",
+        task_id=task_id,
+        task_type="batch_check_subscription",
+        payload=payload,
+        progress={"completed": 0, "total": len(ids)},
+        max_retries=3,
+    )
+    _submit_payment_async_task(task_id, _run_batch_check_subscription_async, payload)
+    return snapshot
+
+
+@router.get("/ops/tasks/{task_id}")
+def get_payment_operation_task(task_id: str):
+    return get_payment_op_task(task_id)
 
 
 @router.post("/accounts/{account_id}/mark-subscription")
