@@ -636,6 +636,18 @@ user:pass@127.0.0.1:7890
 
                             <div class="form-row">
                                 <div class="form-group">
+                                    <label for="registration-wait-strategy">批量等待策略</label>
+                                    <select id="registration-wait-strategy" name="wait_strategy">
+                                        <option value="start">启动间隔</option>
+                                        <option value="completion">完成间隔</option>
+                                    </select>
+                                    <span class="hint">启动间隔会在启动新任务前等待；完成间隔会在前一任务完成后等待再复用并发槽</span>
+                                    <div id="registration-wait-strategy-status" class="hint" style="margin-top: 8px;"></div>
+                                </div>
+                            </div>
+
+                            <div class="form-row">
+                                <div class="form-group">
                                     <label for="sleep-min">最小等待时间 (秒)</label>
                                     <input type="number" id="sleep-min" name="sleep_min" value="5" min="1" max="60">
                                 </div>
@@ -743,7 +755,5 @@ user:pass@127.0.0.1:7890
     {% include "partials/site_footer.html" %}
 </body>
 </html>
-
-
 
 

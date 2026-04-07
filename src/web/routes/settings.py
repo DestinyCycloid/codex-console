@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from ...config.settings import get_settings, update_settings
+from ...config.constants import RegistrationWaitStrategy, normalize_registration_wait_strategy
 from ...core.auto_registration import (
     trigger_auto_registration_check,
     update_auto_registration_state,
@@ -54,6 +55,7 @@ class RegistrationSettings(BaseModel):
     default_password_length: int = 12
     sleep_min: int = 5
     sleep_max: int = 30
+    wait_strategy: str = RegistrationWaitStrategy.START.value
     entry_flow: str = "native"
     auto_enabled: bool = False
     auto_check_interval: int = 60
@@ -99,6 +101,7 @@ async def get_all_settings():
 
     entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
     entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+    wait_strategy = normalize_registration_wait_strategy(getattr(settings, "registration_wait_strategy", "start"))
 
     return {
         "proxy": {
@@ -120,6 +123,7 @@ async def get_all_settings():
             "default_password_length": settings.registration_default_password_length,
             "sleep_min": settings.registration_sleep_min,
             "sleep_max": settings.registration_sleep_max,
+            "wait_strategy": wait_strategy,
             "entry_flow": entry_flow,
             "auto_enabled": settings.registration_auto_enabled,
             "auto_check_interval": settings.registration_auto_check_interval,
@@ -310,6 +314,7 @@ async def get_registration_settings():
 
     entry_flow_raw = str(settings.registration_entry_flow or "native").strip().lower()
     entry_flow = "abcard" if entry_flow_raw == "abcard" else "native"
+    wait_strategy = normalize_registration_wait_strategy(getattr(settings, "registration_wait_strategy", "start"))
 
     return {
         "max_retries": settings.registration_max_retries,
@@ -317,6 +322,7 @@ async def get_registration_settings():
         "default_password_length": settings.registration_default_password_length,
         "sleep_min": settings.registration_sleep_min,
         "sleep_max": settings.registration_sleep_max,
+        "wait_strategy": wait_strategy,
         "entry_flow": entry_flow,
         "auto_enabled": settings.registration_auto_enabled,
         "auto_check_interval": settings.registration_auto_check_interval,
@@ -343,6 +349,11 @@ async def update_registration_settings(request: RegistrationSettings):
 
     if request.sleep_min < 1 or request.sleep_max < request.sleep_min:
         raise HTTPException(status_code=400, detail="注册等待时间参数无效")
+
+    wait_strategy_raw = str(request.wait_strategy or RegistrationWaitStrategy.START.value).strip().lower()
+    if wait_strategy_raw not in {RegistrationWaitStrategy.START.value, RegistrationWaitStrategy.COMPLETION.value}:
+        raise HTTPException(status_code=400, detail="等待策略仅支持 start / completion")
+    wait_strategy = normalize_registration_wait_strategy(wait_strategy_raw)
 
     flow_raw = (request.entry_flow or "native").strip().lower()
     # 兼容旧前端历史值：outlook -> native（Outlook 邮箱会在运行时自动走 outlook 链路）。
@@ -399,6 +410,7 @@ async def update_registration_settings(request: RegistrationSettings):
         registration_default_password_length=request.default_password_length,
         registration_sleep_min=request.sleep_min,
         registration_sleep_max=request.sleep_max,
+        registration_wait_strategy=wait_strategy,
         registration_entry_flow=flow,
         registration_auto_enabled=request.auto_enabled,
         registration_auto_check_interval=request.auto_check_interval,

@@ -52,6 +52,7 @@ let batchWsReconnectAttempts = 0;
 let wsManualClose = false;
 let batchWsManualClose = false;
 let autoMonitorLastLogIndex = 0;
+let registrationWaitStrategy = 'start';
 
 const WS_RECONNECT_BASE_DELAY = 1000;
 const WS_RECONNECT_MAX_DELAY = 10000;
@@ -110,11 +111,13 @@ const elements = {
     outlookConcurrencyMode: document.getElementById('outlook-concurrency-mode'),
     outlookConcurrencyCount: document.getElementById('outlook-concurrency-count'),
     outlookConcurrencyHint: document.getElementById('outlook-concurrency-hint'),
+    outlookWaitStrategyHint: document.getElementById('outlook-wait-strategy-hint'),
     outlookIntervalGroup: document.getElementById('outlook-interval-group'),
     // 批量并发控件
     concurrencyMode: document.getElementById('concurrency-mode'),
     concurrencyCount: document.getElementById('concurrency-count'),
     concurrencyHint: document.getElementById('concurrency-hint'),
+    waitStrategyHint: document.getElementById('wait-strategy-hint'),
     intervalGroup: document.getElementById('interval-group'),
     // 注册后自动操作
     autoUploadCpa: document.getElementById('auto-upload-cpa'),
@@ -162,6 +165,7 @@ const elements = {
 document.addEventListener('DOMContentLoaded', () => {
     initEventListeners();
     handleModeChange({ target: elements.regMode });
+    updateRegistrationWaitStrategyHints();
     loadAvailableServices();
     loadRecentAccounts();
     loadAutoRegistrationSettings();
@@ -297,9 +301,11 @@ function initEventListeners() {
     // 并发模式切换
     elements.concurrencyMode.addEventListener('change', () => {
         handleConcurrencyModeChange(elements.concurrencyMode, elements.concurrencyHint, elements.intervalGroup);
+        updateRegistrationWaitStrategyHints();
     });
     elements.outlookConcurrencyMode.addEventListener('change', () => {
         handleConcurrencyModeChange(elements.outlookConcurrencyMode, elements.outlookConcurrencyHint, elements.outlookIntervalGroup);
+        updateRegistrationWaitStrategyHints();
     });
 
     if (elements.refreshSchedulesBtn) {
@@ -546,6 +552,7 @@ function handleServiceChange(e) {
         elements.regModeGroup.style.display = 'none';
         elements.batchCountGroup.style.display = 'none';
         elements.batchOptions.style.display = 'none';
+        updateRegistrationWaitStrategyHints();
         loadOutlookAccounts();
         addLog('info', '[系统] 已切换到 Outlook 批量注册模式');
         return;
@@ -553,6 +560,7 @@ function handleServiceChange(e) {
         isOutlookBatchMode = false;
         elements.outlookBatchSection.style.display = 'none';
         elements.regModeGroup.style.display = 'block';
+        updateRegistrationWaitStrategyHints();
     }
 
     // 显示服务信息
@@ -612,6 +620,7 @@ function handleModeChange(e) {
 
     elements.batchCountGroup.style.display = isBatchMode ? 'block' : 'none';
     elements.batchOptions.style.display = isBatchMode ? 'block' : 'none';
+    updateRegistrationWaitStrategyHints();
     if (elements.autoRegistrationSection) {
         elements.autoRegistrationSection.style.display = isAutoMode ? 'block' : 'none';
     }
@@ -642,6 +651,33 @@ function handleConcurrencyModeChange(selectEl, hintEl, intervalGroupEl) {
     } else {
         hintEl.textContent = '同时最多运行 N 个任务，每隔 interval 秒启动新任务';
         intervalGroupEl.style.display = 'block';
+    }
+}
+
+function updateRegistrationWaitStrategyHints() {
+    const strategyLabel = registrationWaitStrategy === 'completion' ? '完成间隔' : '启动间隔';
+    const normalMode = elements.concurrencyMode?.value || 'pipeline';
+    const outlookMode = elements.outlookConcurrencyMode?.value || 'pipeline';
+    const prefix = '<strong style="color: var(--text-secondary); font-weight: 700;">当前全局等待策略：</strong>';
+
+    if (elements.waitStrategyHint) {
+        if (normalMode === 'parallel') {
+            elements.waitStrategyHint.innerHTML = `${prefix}${strategyLabel}。当前并行模式下不会使用间隔等待。`;
+        } else if (registrationWaitStrategy === 'completion') {
+            elements.waitStrategyHint.innerHTML = `${prefix}完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。`;
+        } else {
+            elements.waitStrategyHint.innerHTML = `${prefix}启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。`;
+        }
+    }
+
+    if (elements.outlookWaitStrategyHint) {
+        if (outlookMode === 'parallel') {
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}${strategyLabel}。当前并行模式下不会使用间隔等待。`;
+        } else if (registrationWaitStrategy === 'completion') {
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}完成间隔。前一个任务完成后，会等待随机秒数，再启动后续任务。`;
+        } else {
+            elements.outlookWaitStrategyHint.innerHTML = `${prefix}启动间隔。启动新任务前会等待随机秒数；如果前一任务更慢，后续任务可能在完成后立即接上。`;
+        }
     }
 }
 
@@ -1034,6 +1070,7 @@ async function loadAutoRegistrationSettings() {
     try {
         const data = await api.get('/settings');
         const reg = data.registration || {};
+        registrationWaitStrategy = reg.wait_strategy || 'start';
         elements.autoRegistrationEnabled.checked = reg.auto_enabled || false;
         elements.autoRegistrationCheckInterval.value = reg.auto_check_interval || 60;
         elements.autoRegistrationMinReady.value = reg.auto_min_ready_auth_files || 1;
@@ -1048,6 +1085,7 @@ async function loadAutoRegistrationSettings() {
             elements.concurrencyHint,
             elements.autoRegistrationIntervalGroup
         );
+        updateRegistrationWaitStrategyHints();
         elements.autoRegistrationEmailServiceId.dataset.selectedId = String(reg.auto_email_service_id || 0);
         elements.autoRegistrationCpaServiceId.dataset.selectedId = String(reg.auto_cpa_service_id || 0);
         populateAutoRegistrationEmailServiceOptions(reg.auto_email_service_id || 0);

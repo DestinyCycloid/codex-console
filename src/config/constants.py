@@ -34,6 +34,12 @@ class RoleTag(str, Enum):
     CHILD = "child"
 
 
+class RegistrationWaitStrategy(str, Enum):
+    """批量注册等待策略"""
+    START = "start"
+    COMPLETION = "completion"
+
+
 class PoolState(str, Enum):
     """账号池状态"""
     TEAM_POOL = "team_pool"
@@ -82,6 +88,14 @@ def normalize_role_tag(value: str) -> str:
     if text in (RoleTag.CHILD.value, "member", "子号"):
         return RoleTag.CHILD.value
     return RoleTag.NONE.value
+
+
+def normalize_registration_wait_strategy(value: str) -> str:
+    """标准化批量等待策略，未知值降级为 start。"""
+    text = str(value or "").strip().lower()
+    if text == RegistrationWaitStrategy.COMPLETION.value:
+        return RegistrationWaitStrategy.COMPLETION.value
+    return RegistrationWaitStrategy.START.value
 
 
 def normalize_pool_state(value: str) -> str:
